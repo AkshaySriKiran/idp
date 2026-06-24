@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OmniParse IDP – Cognitive Contextual Search & Excel Generator</title>
+  
+  <!-- Modern Google Font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- CSS Stylesheet link -->
+  <link rel="stylesheet" href="styles.css">
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- PDF.js library for client-side PDF rendering/extraction -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  
+  <!-- SheetJS library for high-fidelity client-side Excel generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+  <!-- Background Glow Orbs -->
+  <div class="glow-orb orb-1"></div>
+  <div class="glow-orb orb-2"></div>
+  <div class="glow-orb orb-3"></div>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-logo">
+        <div class="logo-icon">
+          <i data-lucide="cpu"></i>
+        </div>
+        <div class="logo-text">
+          <h1>OmniParse IDP</h1>
+          <p>Cognitive Contextual Search & Maintenance Extractor</p>
+        </div>
+      </div>
+      <div class="header-status">
+        <div class="status-indicator">
+          <span class="pulse"></span>
+          <span class="status-label">Local Cog-Engine Ready</span>
+        </div>
+        <div class="active-doc-badge" id="active-doc-name" style="border-color: hsla(0, 85%, 60%, 0.3); color: hsl(0, 85%, 65%); background: hsla(0, 85%, 60%, 0.05);">
+          <i data-lucide="file-warning"></i>
+          <span>No Document Loaded</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="app-main">
+      
+      <!-- LEFT COLUMN: Document Input & Cog-Search Chat -->
+      <section class="left-panel">
+        
+        <!-- Drag & Drop Upload Card -->
+        <div class="glass-card upload-card" id="drop-zone">
+          <input type="file" id="file-input" accept=".pdf,.txt" style="display: none;">
+          <div class="upload-content">
+            <div class="upload-icon-wrapper">
+              <i data-lucide="upload-cloud" class="upload-icon"></i>
+            </div>
+            <h3>Upload Engineering Document</h3>
+            <p class="upload-subtext">Drag & drop your PDF or TXT manual here, or <span class="browse-link" id="browse-btn">browse files</span></p>
+            <p class="upload-formats">Supported formats: PDF, TXT (Max size 50MB)</p>
+          </div>
+          
+          <!-- Parsing Progress Overlay (Hidden by default) -->
+          <div class="progress-overlay" id="progress-overlay">
+            <div class="spinner"></div>
+            <h4 id="progress-title">Extracting Document Text...</h4>
+            <div class="progress-bar-container">
+              <div class="progress-bar-fill" id="progress-fill"></div>
+            </div>
+            <p class="progress-subtext" id="progress-status">Initializing PDF.js scraper...</p>
+            <button class="btn btn-danger" id="cancel-extract-btn" style="margin-top: 1rem; padding: 0.4rem 1rem; display: flex; align-items: center; gap: 0.5rem; border-radius: 8px;">
+              <i data-lucide="x-circle"></i>
+              <span>Cancel Extraction</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Local AI Engine Configuration Card -->
+        <div class="glass-card settings-card">
+          <div class="card-header">
+            <div class="card-title">
+              <i data-lucide="sliders" class="accent-icon"></i>
+              <h2>AI Parsing Engine Settings</h2>
+            </div>
+            <div class="settings-header-badge" id="ollama-status-badge">
+              <span class="status-dot offline"></span>
+              <span class="status-text">Local Heuristics</span>
+            </div>
+          </div>
+          <div class="settings-body">
+            <div class="form-group">
+              <label for="engine-mode">Extraction Engine Mode</label>
+              <select id="engine-mode" class="settings-select">
+                <option value="ollama" selected>Ollama (Intelligent)</option>
+                <option value="heuristics">Heuristics (Fast)</option>
+              </select>
+            </div>
+            
+            <div class="form-group" id="parse-strategy-group">
+              <label for="parse-strategy">Parse Strategy (For Ollama)</label>
+              <select id="parse-strategy" class="settings-select">
+                <option value="native" selected>Native Text (Fast)</option>
+                <option value="ocr">OCR Vision (Scanned/Handwritten)</option>
+              </select>
+            </div>
+            
+            <div class="form-group">
+              <label for="equipment-category">Equipment Category (Manifest)</label>
+              <select id="equipment-category" class="settings-select">
+                <option value="Default" selected>Default (General)</option>
+                <option value="Pump">Pumps</option>
+                <option value="Drawworks">Drawworks</option>
+                <option value="Logbook">Field History / Logbook</option>
+              </select>
+            </div>
+            
+            <div id="ollama-settings-group" style="display: none;">
+              <div class="form-group">
+                <label for="ollama-url">Ollama API Endpoint</label>
+                <input type="text" id="ollama-url" value="http://localhost:11434" class="settings-input" placeholder="e.g. http://localhost:11434">
+              </div>
+              <div class="form-row">
+                <div class="form-group" style="flex: 1;">
+                  <label for="ollama-model-select">Active Ollama Model</label>
+                  <select id="ollama-model-select" class="settings-select">
+                    <!-- Loaded dynamically -->
+                  </select>
+                  <input type="text" id="ollama-model-input" class="settings-input" style="display: none;" placeholder="Or type model name manually...">
+                </div>
+                <button type="button" class="btn btn-secondary" id="btn-test-ollama" style="align-self: flex-end; height: 38px; margin-bottom: 0px; margin-left: 8px; border-radius: 8px;">
+                  <i data-lucide="refresh-cw"></i>
+                  <span>Sync</span>
+                </button>
+              </div>
+              <div class="ollama-info" id="ollama-info-text">
+                Ollama not verified. Click "Sync" to check local models.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cognitive Search Chatbot Card -->
+        <div class="glass-card search-card">
+          <div class="card-header">
+            <div class="card-title">
+              <i data-lucide="sparkles" class="accent-icon"></i>
+              <h2>AI Contextual Copilot</h2>
+            </div>
+            <span class="badge">Semantic Search</span>
+          </div>
+          
+          <div class="chat-container">
+            <div class="chat-messages" id="chat-messages">
+              <!-- Welcome message -->
+              <div class="chat-message assistant">
+                <div class="msg-avatar"><i data-lucide="bot"></i></div>
+                <div class="msg-content">
+                  <p>Welcome! Please **upload or drag-and-drop** an engineering user manual (PDF or TXT) to get started.</p>
+                  <p>Once uploaded, my cognitive extraction engine will automatically parse the document to compile a structured maintenance and spare parts registry, and you can perform contextual searches on the manual here.</p>
+                </div>
+              </div>
+            </div>
+            
+            <form class="chat-input-area" id="chat-form">
+              <input type="text" id="chat-input" placeholder="Ask a question about the preloaded or uploaded manual..." required autocomplete="off">
+              <button type="submit" class="send-btn" title="Send Question">
+                <i data-lucide="send"></i>
+              </button>
+            </form>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- RIGHT COLUMN: Extracted Database & Grid Controls -->
+      <section class="right-panel">
+        
+        <!-- Stats Bar -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon-wrapper blue-glow"><i data-lucide="wrench"></i></div>
+            <div class="stat-info">
+              <span class="stat-label">Maintenance Rules</span>
+              <h2 class="stat-value" id="count-rules">0</h2>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon-wrapper green-glow"><i data-lucide="package"></i></div>
+            <div class="stat-info">
+              <span class="stat-label">Spare Parts</span>
+              <h2 class="stat-value" id="count-parts">0</h2>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon-wrapper amber-glow"><i data-lucide="droplet"></i></div>
+            <div class="stat-info">
+              <span class="stat-label">Consumables</span>
+              <h2 class="stat-value" id="count-consumables">0</h2>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon-wrapper purple-glow"><i data-lucide="clock"></i></div>
+            <div class="stat-info">
+              <span class="stat-label">Time-based Tasks</span>
+              <h2 class="stat-value" id="count-time">0</h2>
+            </div>
+          </div>
+        </div>
+
+        <!-- Central Grid Panel -->
+        <div class="glass-card grid-card">
+          <div class="grid-toolbar">
+            <div class="toolbar-left">
+              <div class="registry-mode-container">
+                <div class="registry-mode-tabs" id="registry-mode-tabs">
+                  <button class="mode-tab-btn active" data-mode="maintenance">
+                    <i data-lucide="wrench"></i>
+                    <span>Maintenance Tasks</span>
+                  </button>
+                  <button class="mode-tab-btn" data-mode="spare_parts">
+                    <i data-lucide="package"></i>
+                    <span>Spare Parts & Components</span>
+                  </button>
+                </div>
+              </div>
+              
+              <div class="filter-tabs" id="filter-tabs">
+                <button class="tab-btn active" data-filter="all">All Intervals</button>
+                <button class="tab-btn" data-filter="hours">Hourly</button>
+                <button class="tab-btn" data-filter="days">Daily / Shift</button>
+                <button class="tab-btn" data-filter="months">Monthly</button>
+                <button class="tab-btn" data-filter="years">Yearly</button>
+              </div>
+            </div>
+            
+            <div class="toolbar-right">
+              <!-- Inline Text Search -->
+              <div class="grid-search-bar">
+                <i data-lucide="search" class="search-icon"></i>
+                <input type="text" id="grid-search" placeholder="Filter table records...">
+              </div>
+              
+              <!-- Excel Export Button -->
+              <button class="btn btn-primary" id="export-btn">
+                <i data-lucide="file-spreadsheet"></i>
+                <span>Export to Excel</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- The Registry Table Grid -->
+          <div class="grid-container">
+            <!-- Maintenance Table -->
+            <table class="data-table" id="maintenance-table">
+              <thead>
+                <tr id="maintenance-table-headers">
+                  <th style="width: 60px;">ID</th>
+                  <th style="width: 150px;">Equipment Title</th>
+                  <th style="width: 200px;">Sub-system / Component</th>
+                  <th style="width: 130px;">Maintenance Routine</th>
+                  <th style="width: 350px;">Required Maintenance Checks / Instructions</th>
+                  <th style="width: 70px;">Page</th>
+                  <th style="width: 70px; text-align: center;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="maintenance-table-body">
+                <!-- Javascript will inject rows dynamically -->
+              </tbody>
+            </table>
+
+            <!-- Spare Parts Table -->
+            <table class="data-table" id="spare-parts-table" style="display: none;">
+              <thead>
+                <tr>
+                  <th style="width: 60px;">ID</th>
+                  <th style="width: 130px;">Equipment Title</th>
+                  <th style="width: 160px;">Sub-system / Location</th>
+                  <th style="width: 70px;">Item No.</th>
+                  <th style="width: 180px;">Part Name / Description</th>
+                  <th style="width: 140px;">Mfr Part Number / Code</th>
+                  <th style="width: 130px;">Drawing / Model No</th>
+                  <th style="width: 110px;">OEM / Standard Body</th>
+                  <th style="width: 110px;">Part Categorization</th>
+                  <th style="width: 80px; text-align: center;">Quantity</th>
+                  <th style="width: 70px; text-align: center;">Stock Qty</th>
+                  <th style="width: 100px;">Warranty Period</th>
+                  <th style="width: 150px; text-align: center;">Frequency of Use</th>
+                  <th style="width: 70px;">Page</th>
+                  <th style="width: 70px; text-align: center;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="spare-parts-table-body">
+                <!-- Javascript will inject rows dynamically -->
+              </tbody>
+            </table>
+            
+            <!-- Empty state -->
+            <div class="table-empty-state" id="table-empty" style="display: none;">
+              <i data-lucide="folder-open" class="empty-icon"></i>
+              <h3>No matching records found</h3>
+              <p>Try adjusting your filters or query a different term in the AI Contextual Copilot.</p>
+            </div>
+          </div>
+
+          <!-- Bottom Actions / Row Add -->
+          <div class="grid-footer">
+            <button class="btn btn-secondary" id="add-row-btn">
+              <i data-lucide="plus"></i>
+              <span>Add Custom Record</span>
+            </button>
+            <p class="grid-disclaimer">Double-click on any cell to inline-edit text before exporting.</p>
+          </div>
+        </div>
+
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Lucide icons activator script -->
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      lucide.createIcons();
+    });
+  </script>
+  
+  <!-- Logic script link -->
+  <script src="app.js?v=6"></script>
+</body>
+</html>
