@@ -1844,7 +1844,7 @@ function extractPDFText(file) {
           if (engineMode === "ollama") {
             if (parseStrategy === "ocr" && pageNum === 1) {
               const lowerModel = ollamaModel.toLowerCase();
-              if (!lowerModel.includes("vision") && !lowerModel.includes("llava") && !lowerModel.includes("minicpm")) {
+              if (!lowerModel.includes("vision") && !lowerModel.includes("llava") && !lowerModel.includes("minicpm") && !lowerModel.includes("qwen")) {
                 appendChatSystemMessage(`⚠️ **Model Warning**: You are using OCR Vision mode with **${ollamaModel}**, which appears to be a text-only model! Vision extraction will fail and return 0 results. Please select a vision model (e.g., \`llama3.2-vision\` or \`llava\`).`);
               }
             }
