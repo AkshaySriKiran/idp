@@ -1,0 +1,43 @@
+--- Extracted Text ---
+I   MARTIN-DECKMC   MANUAL   ELECTRIC   TORQUE   SYSTEM 10.00   DRAWINGS,   PARTS   LISTS AND SCHEMATICS 10.01   RECOMMENDED   FIELD   SPARE   PARTS a.   PCB114C   Amplifier b.   GHTlOlA/GHT102A   Meter 10.02   The following   parts   Lists,   drawings   and schematics   are, provided   to assist   in isolating   a malfunction   to a specific   module   or circuit   and to identify   and order   a defective component. 11182   Page 13
+
+--- Gatekeeper Filter ---
+Passed shouldProcessPageWithLLM? true
+
+--- Preparing Prompt ---
+Sending to Ollama...
+
+--- LLM Response ---
+Here is the extracted data in JSON format:
+
+{
+  "maintenance": [],
+  "spare_parts": [
+    {
+      "equipment_title": "${cleanDocName}",
+      "part_name": "PCB114C Amplifier",
+      "part_number_code": "NA",
+      "drawing_model_no": "NA",
+      "oem_standard_body": "NA",
+      "part_categorization": "Critical Spare",
+      "quantity": "1",
+      "recommended_stock_qty": "NA",
+      "warranty_period": "NA",
+      "frequency_of_use": "NA"
+    },
+    {
+      "equipment_title": "${cleanDocName}",
+      "part_name": "GHTlOlA/GHT102A Meter",
+      "part_number_code": "NA",
+      "drawing_model_no": "NA",
+      "oem_standard_body": "NA",
+      "part_categorization": "Critical Spare",
+      "quantity": "1",
+      "recommended_stock_qty": "NA",
+      "warranty_period": "NA",
+      "frequency_of_use": "NA"
+    }
+  ]
+}
+
+Note: Since the provided text does not contain actual maintenance routines or specific spare parts data, I extracted only the part names mentioned in the text and populated the other fields with default values as per the rules.

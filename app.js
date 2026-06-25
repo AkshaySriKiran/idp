@@ -11,7 +11,8 @@ if (typeof pdfjsLib !== 'undefined') {
 // Preloaded Sichuan Honghua JC70DB Drawworks High-Fidelity Dataset
 let maintenanceRegistry = [];
 let sparePartsRegistry = [];
-let activeRegistryTab = "maintenance"; // "maintenance" or "spare_parts"
+let troubleshootingRegistry = [];
+let activeRegistryTab = "maintenance"; // "maintenance", "spare_parts", "troubleshooting"
 
 // Document storage for contextual searches
 let loadedPages = []; 
@@ -36,14 +37,17 @@ function safeCreateIcons() {
 // DOM Elements
 const maintenanceTable = document.getElementById("maintenance-table");
 const sparePartsTable = document.getElementById("spare-parts-table");
+const troubleshootingTable = document.getElementById("troubleshooting-table");
 const maintenanceTableBody = document.getElementById("maintenance-table-body");
 const sparePartsTableBody = document.getElementById("spare-parts-table-body");
+const troubleshootingTableBody = document.getElementById("troubleshooting-table-body");
 const registryModeTabs = document.getElementById("registry-mode-tabs");
 const tableEmpty = document.getElementById("table-empty");
 const countRules = document.getElementById("count-rules");
 const countParts = document.getElementById("count-parts");
 const countConsumables = document.getElementById("count-consumables");
 const countTime = document.getElementById("count-time");
+const countTroubleshooting = document.getElementById("count-troubleshooting");
 const filterTabs = document.getElementById("filter-tabs");
 const gridSearch = document.getElementById("grid-search");
 const addRowBtn = document.getElementById("add-row-btn");
@@ -73,10 +77,17 @@ if (registryModeTabs) {
     if (activeRegistryTab === "maintenance") {
       maintenanceTable.style.display = "table";
       sparePartsTable.style.display = "none";
+      troubleshootingTable.style.display = "none";
       filterTabs.style.display = "flex";
-    } else {
+    } else if (activeRegistryTab === "spare_parts") {
       maintenanceTable.style.display = "none";
       sparePartsTable.style.display = "table";
+      troubleshootingTable.style.display = "none";
+      filterTabs.style.display = "none";
+    } else if (activeRegistryTab === "troubleshooting") {
+      maintenanceTable.style.display = "none";
+      sparePartsTable.style.display = "none";
+      troubleshootingTable.style.display = "table";
       filterTabs.style.display = "none";
     }
     
@@ -710,7 +721,7 @@ function shouldProcessPageWithLLM(pageText) {
   // High-value keywords for maintenance and parts
   const keywords = (equipmentManifest && equipmentManifest.categories[activeEquipmentCategory]) 
     ? equipmentManifest.categories[activeEquipmentCategory].keywords 
-    : ["replace", "lubricate", "grease", "inspect", "maintenance"];
+    : ["replace", "lubricate", "grease", "inspect", "maintenance", "troubleshoot", "problem", "fault", "cause", "solution"];
   
   return keywords.some(kw => cleanText.includes(kw));
 }
@@ -733,8 +744,9 @@ async function runOllamaExtractor(text, docName, pageNum, base64Image = null) {
 Your task is to analyze the text page content below and extract:
 1. Maintenance routines, checks, and instructions.
 2. Spare parts and components referenced in drawings or lists.
+3. Troubleshooting tables, problems, and root-cause/solutions.
 
-Group your extractions into two distinct JSON lists: "maintenance" and "spare_parts".
+Group your extractions into three distinct JSON lists: "maintenance", "spare_parts", and "troubleshooting".
 CRITICAL OPTIMIZATION: If a field is missing, not specified, or not available in the text, you MUST OMIT the key entirely from the JSON object. Do NOT output keys with "NA", null, or empty values. This is critical to save generation time.
 
 Rules for "maintenance" tasks:
@@ -756,6 +768,14 @@ Rules for "spare_parts":
 - For "drawing_model_no": The engineering drawing or model designator number.
 - For "recommended_stock_qty", extract stock recommendation levels if present.
 - For "frequency_of_use", extract how frequently this part is used.
+
+Rules for "troubleshooting" tasks:
+- ONLY extract explicit troubleshooting matrices or tables. DO NOT extract Table of Contents headers, general descriptions, or normal paragraphs as problems.
+- A valid problem MUST have a corresponding root cause and solution. If the text does not describe a fault and how to fix it, do NOT extract it.
+- For "equipment_title", default to "${cleanDocName}" if not specified.
+- For "subsystem_component", identify the specific sub-system.
+- For "problem", extract the symptom, fault, or issue described.
+- For "root_cause_solution", extract the combined root cause and solution / elimination method.
 
 Response MUST be strictly valid JSON (and only JSON, with no other text before or after).
 CRITICAL EXCEPTION: Do NOT return empty arrays if you see actual part names accompanied by alphanumeric codes. You MUST extract them.
@@ -779,6 +799,14 @@ Example Output Structure:
       "part_number_code": "GB/T581-2000",
       "part_categorization": "Consumable",
       "quantity": "1"
+    }
+  ],
+  "troubleshooting": [
+    {
+      "equipment_title": "12.BOP Control System",
+      "subsystem_component": "Regulator Valve",
+      "problem": "Valve does not open",
+      "root_cause_solution": "Air lock in line. Bleed air from the system."
     }
   ]
 }`;
@@ -875,7 +903,8 @@ ${text}
     const resultJson = JSON.parse(cleanResponse);
     const output = {
       maintenance: [],
-      spare_parts: []
+      spare_parts: [],
+      troubleshooting: []
     };
 
     if (resultJson.maintenance && Array.isArray(resultJson.maintenance)) {
@@ -928,9 +957,34 @@ ${text}
       });
     }
 
+    if (resultJson.troubleshooting && Array.isArray(resultJson.troubleshooting)) {
+      output.troubleshooting = resultJson.troubleshooting.map(item => {
+        let title = sanitizeVal(item.equipment_title);
+        if (title === "NA") title = cleanDocName;
+        return {
+          id: 0,
+          equipment_title: title,
+          subsystem_component: sanitizeVal(item.subsystem_component),
+          problem: sanitizeVal(item.problem),
+          root_cause_solution: sanitizeVal(item.root_cause_solution),
+          page: pageNum
+        };
+      });
+    }
+
     // Filter out incomplete/placeholder rows with no valid data
     output.maintenance = output.maintenance.filter(isCleanMaintenanceRow);
     output.spare_parts = output.spare_parts.filter(isCleanSparePartsRow);
+    if (output.troubleshooting) {
+       output.troubleshooting = output.troubleshooting.filter(r => 
+         r.problem !== "NA" && 
+         r.root_cause_solution !== "NA" && 
+         r.problem.length > 5 && 
+         r.root_cause_solution.length > 5 &&
+         !r.problem.toLowerCase().includes("... ...") &&
+         !r.problem.toLowerCase().includes(". . . .")
+       );
+    }
 
     return normalizeExtraction(output);
   } catch (parseErr) {
@@ -993,6 +1047,7 @@ function renderMarkdown(text) {
   countParts.innerText = parts;
   countConsumables.innerText = consumables;
   countTime.innerText = timeBased;
+  countTroubleshooting.innerText = troubleshootingRegistry.length;
 }
 
 function renderGrid() {
@@ -1076,7 +1131,7 @@ function renderGrid() {
         });
       }
     }
-  } else {
+  } else if (activeRegistryTab === "spare_parts") {
     // Spare Parts Tab
     sparePartsTableBody.innerHTML = "";
     
@@ -1125,6 +1180,49 @@ function renderGrid() {
           </td>
         `;
         sparePartsTableBody.appendChild(tr);
+      });
+    }
+  } else if (activeRegistryTab === "troubleshooting") {
+    // Troubleshooting Tab
+    troubleshootingTableBody.innerHTML = "";
+    
+    filtered = troubleshootingRegistry.filter(row => {
+      // 1. Search Text Query
+      if (currentSearchQuery) {
+        const q = currentSearchQuery.toLowerCase();
+        const matchText = `${row.equipment_title} ${row.subsystem_component} ${row.problem} ${row.root_cause_solution}`.toLowerCase();
+        if (!matchText.includes(q)) return false;
+      }
+
+      // 2. Cognitive Chat Highlight Filter
+      if (highlightRecordIds.length > 0) {
+        if (!highlightRecordIds.includes(row.id)) return false;
+      }
+      
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      tableEmpty.style.display = "flex";
+    } else {
+      tableEmpty.style.display = "none";
+      
+      filtered.forEach(row => {
+        const tr = document.createElement("tr");
+        tr.setAttribute("data-id", row.id);
+
+        tr.innerHTML = `
+          <td class="page-cell" style="font-weight: 600;">#${row.id}</td>
+          <td class="editable" data-col="equipment_title">${escapeHTML(row.equipment_title || "NA")}</td>
+          <td class="editable" data-col="subsystem_component" style="font-weight: 500;">${escapeHTML(row.subsystem_component || "NA")}</td>
+          <td class="editable" data-col="problem" style="color: var(--accent-amber); font-weight: 500; white-space: normal;">${escapeHTML(row.problem || "NA")}</td>
+          <td class="editable" data-col="root_cause_solution" style="white-space: normal;">${escapeHTML(row.root_cause_solution || "NA")}</td>
+          <td class="page-cell editable" data-col="page" style="text-align: center;">Page ${row.page || "NA"}</td>
+          <td class="row-actions">
+            <button class="row-btn btn-delete" title="Delete record"><i data-lucide="trash-2"></i></button>
+          </td>
+        `;
+        troubleshootingTableBody.appendChild(tr);
       });
     }
   }
@@ -1219,8 +1317,10 @@ function attachTableListeners() {
       const id = parseInt(tr.getAttribute("data-id"));
       if (activeRegistryTab === "maintenance") {
         maintenanceRegistry = maintenanceRegistry.filter(r => r.id !== id);
-      } else {
+      } else if (activeRegistryTab === "spare_parts") {
         sparePartsRegistry = sparePartsRegistry.filter(r => r.id !== id);
+      } else if (activeRegistryTab === "troubleshooting") {
+        troubleshootingRegistry = troubleshootingRegistry.filter(r => r.id !== id);
       }
       renderGrid();
     });
@@ -1241,7 +1341,7 @@ addRowBtn.addEventListener("click", () => {
       page: "NA"
     };
     maintenanceRegistry.unshift(newRow);
-  } else {
+  } else if (activeRegistryTab === "spare_parts") {
     newId = sparePartsRegistry.length > 0 ? Math.max(...sparePartsRegistry.map(r => r.id)) + 1 : 1;
     const newRow = {
       id: newId,
@@ -1260,13 +1360,26 @@ addRowBtn.addEventListener("click", () => {
       page: "NA"
     };
     sparePartsRegistry.unshift(newRow);
+  } else if (activeRegistryTab === "troubleshooting") {
+    newId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
+    const newRow = {
+      id: newId,
+      equipment_title: "Equipment Title",
+      subsystem_component: "Sub-system / Component",
+      problem: "Problem Description",
+      root_cause_solution: "Root Cause / Solution",
+      page: "NA"
+    };
+    troubleshootingRegistry.unshift(newRow);
   }
   
   renderGrid();
   
   // Automatically open edit on the first column of the newly inserted row
   setTimeout(() => {
-    const tableId = activeRegistryTab === "maintenance" ? "maintenance-table" : "spare-parts-table";
+    let tableId = "maintenance-table";
+    if (activeRegistryTab === "spare_parts") tableId = "spare-parts-table";
+    else if (activeRegistryTab === "troubleshooting") tableId = "troubleshooting-table";
     const firstCell = document.querySelector(`#${tableId} tr[data-id="${newId}"] td.editable`);
     if (firstCell) {
       const event = new MouseEvent('dblclick', { bubbles: true, cancelable: true });
@@ -1355,7 +1468,7 @@ exportBtn.addEventListener("click", () => {
     const dateStr = new Date().toISOString().slice(0, 10);
     const filename = `OmniParse_Maintenance_Tasks_${dateStr}.xlsx`;
     XLSX.writeFile(wb, filename);
-  } else {
+  } else if (activeRegistryTab === "spare_parts") {
     if (sparePartsRegistry.length === 0) {
       alert("No spare parts records to export.");
       return;
@@ -1401,6 +1514,37 @@ exportBtn.addEventListener("click", () => {
 
     const dateStr = new Date().toISOString().slice(0, 10);
     const filename = `OmniParse_Spare_Parts_${dateStr}.xlsx`;
+    XLSX.writeFile(wb, filename);
+  } else if (activeRegistryTab === "troubleshooting") {
+    if (troubleshootingRegistry.length === 0) {
+      alert("No troubleshooting records to export.");
+      return;
+    }
+
+    const wb = XLSX.utils.book_new();
+    const exportTrouble = troubleshootingRegistry.map(r => ({
+      "Record ID": `#${r.id}`,
+      "Equipment Title": r.equipment_title || "NA",
+      "Sub-system / Component": r.subsystem_component || "NA",
+      "Problem / Symptom": r.problem || "NA",
+      "Root Cause / Solution": r.root_cause_solution || "NA",
+      "Source Page Reference": r.page === "NA" ? "NA" : `Page ${r.page}`
+    }));
+
+    const wsTrouble = XLSX.utils.json_to_sheet(exportTrouble);
+    const colsTrouble = [
+      { wch: 10 }, // ID
+      { wch: 22 }, // Equipment Title
+      { wch: 28 }, // Sub-system
+      { wch: 35 }, // Problem
+      { wch: 65 }, // Root Cause
+      { wch: 15 }  // Page Reference
+    ];
+    wsTrouble['!cols'] = colsTrouble;
+    XLSX.utils.book_append_sheet(wb, wsTrouble, "Troubleshooting");
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = `OmniParse_Troubleshooting_${dateStr}.xlsx`;
     XLSX.writeFile(wb, filename);
   }
 });
@@ -1485,6 +1629,7 @@ function extractTXTText(file) {
       try {
         let maintCount = 0;
         let sparesCount = 0;
+        let troubleCount = 0;
         let llmChunksProcessed = 0;
         let totalChunksCount = 0;
         
@@ -1535,6 +1680,12 @@ function extractTXTText(file) {
                 result.spare_parts.forEach((r, rIdx) => r.id = startingId + rIdx);
                 sparePartsRegistry = [...sparePartsRegistry, ...result.spare_parts];
               }
+              if (result.troubleshooting && result.troubleshooting.length > 0) {
+                troubleCount += result.troubleshooting.length;
+                const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
+                result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
+                troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+              }
               renderGrid();
             }
           } else {
@@ -1558,6 +1709,12 @@ function extractTXTText(file) {
                 result.spare_parts.forEach((r, rIdx) => r.id = startingId + rIdx);
                 sparePartsRegistry = [...sparePartsRegistry, ...result.spare_parts];
               }
+              if (result.troubleshooting && result.troubleshooting.length > 0) {
+                troubleCount += result.troubleshooting.length;
+                const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
+                result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
+                troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+              }
             }
           }
         } else {
@@ -1575,6 +1732,12 @@ function extractTXTText(file) {
             result.spare_parts.forEach((r, rIdx) => r.id = startingId + rIdx);
             sparePartsRegistry = [...sparePartsRegistry, ...result.spare_parts];
           }
+          if (result.troubleshooting && result.troubleshooting.length > 0) {
+            troubleCount += result.troubleshooting.length;
+            const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
+            result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
+            troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+          }
         }
         
         progressFill.style.width = "100%";
@@ -1588,7 +1751,7 @@ function extractTXTText(file) {
           activeDocName.style.background = "hsla(190, 90%, 50%, 0.05)";
           
           const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmChunksProcessed} / ${totalChunksCount} chunks` : "heuristics";
-          appendChatSystemMessage(`Successfully parsed text manual **"${file.name}"** using **${labelModeText}**! Extracted **${maintCount}** maintenance tasks and **${sparesCount}** spare parts into the registries.`);
+          appendChatSystemMessage(`Successfully parsed text manual **"${file.name}"** using **${labelModeText}**! Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
           renderGrid();
           isExtracting = false;
           resolve();
@@ -1638,6 +1801,7 @@ function extractPDFText(file) {
         let compiledText = "";
         let maintCount = 0;
         let sparesCount = 0;
+        let troubleCount = 0;
         let llmPagesProcessed = 0;
 
         for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
@@ -1705,6 +1869,12 @@ function extractPDFText(file) {
                 result.spare_parts.forEach((r, rIdx) => r.id = startingId + rIdx);
                 sparePartsRegistry = [...sparePartsRegistry, ...result.spare_parts];
               }
+              if (result.troubleshooting && result.troubleshooting.length > 0) {
+                troubleCount += result.troubleshooting.length;
+                const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
+                result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
+                troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+              }
               renderGrid();
             } catch (err) {
               console.warn(`Ollama failed on Page ${pageNum}, skipping page:`, err);
@@ -1725,6 +1895,12 @@ function extractPDFText(file) {
               result.spare_parts.forEach((r, rIdx) => r.id = startingId + rIdx);
               sparePartsRegistry = [...sparePartsRegistry, ...result.spare_parts];
             }
+            if (result.troubleshooting && result.troubleshooting.length > 0) {
+              troubleCount += result.troubleshooting.length;
+              const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
+              result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
+              troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+            }
             renderGrid();
           }
         }
@@ -1740,10 +1916,10 @@ function extractPDFText(file) {
           activeDocName.style.background = "hsla(190, 90%, 50%, 0.05)";
           
           const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmPagesProcessed} / ${totalPages} pages` : "heuristics";
-          appendChatSystemMessage(`Completed client-side PDF processing for **"${file.name}"** (${totalPages} pages) using **${labelModeText}**. Extracted **${maintCount}** tasks and **${sparesCount}** spare parts into the registries.`);
+          appendChatSystemMessage(`Completed client-side PDF processing for **"${file.name}"** (${totalPages} pages) using **${labelModeText}**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
           
           // Warn if it seems to be a scanned document
-          if (maintCount === 0 && sparesCount === 0 && compiledText.trim().length < 200) {
+          if (maintCount === 0 && sparesCount === 0 && troubleCount === 0 && compiledText.trim().length < 200) {
             appendChatSystemMessage(`⚠️ **Document Scan Warning**: No searchable text layers were detected in **"${file.name}"**. The PDF may be composed of scanned page images. Please ensure the manual has selectable text or try converting it to a plain text (.txt) file.`);
           }
           
@@ -2001,7 +2177,9 @@ async function processCognitiveChatSearch(query) {
 
   // Database Grid matching logic (find record matches to auto filter in active tab)
   let gridMatches = [];
-  const currentRegistry = activeRegistryTab === "maintenance" ? maintenanceRegistry : sparePartsRegistry;
+  let currentRegistry = maintenanceRegistry;
+  if (activeRegistryTab === "spare_parts") currentRegistry = sparePartsRegistry;
+  if (activeRegistryTab === "troubleshooting") currentRegistry = troubleshootingRegistry;
   
   currentRegistry.forEach(row => {
     let score = 0;
@@ -2009,8 +2187,10 @@ async function processCognitiveChatSearch(query) {
       let text = "";
       if (activeRegistryTab === "maintenance") {
         text = `${row.equipment_title} ${row.subsystem_component} ${row.maintenance_routine} ${row.checks_instructions}`;
-      } else {
+      } else if (activeRegistryTab === "spare_parts") {
         text = `${row.equipment_title} ${row.subsystem_location} ${row.part_name} ${row.part_number_code} ${row.drawing_model_no} ${row.part_categorization}`;
+      } else if (activeRegistryTab === "troubleshooting") {
+        text = `${row.equipment_title} ${row.subsystem_component} ${row.problem} ${row.root_cause_solution}`;
       }
       text = text.toLowerCase();
       if (text.includes(token)) {

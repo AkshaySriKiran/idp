@@ -215,6 +215,13 @@
               <h2 class="stat-value" id="count-time">0</h2>
             </div>
           </div>
+          <div class="stat-card">
+            <div class="stat-icon-wrapper red-glow"><i data-lucide="alert-triangle"></i></div>
+            <div class="stat-info">
+              <span class="stat-label">Troubleshoot Issues</span>
+              <h2 class="stat-value" id="count-troubleshooting">0</h2>
+            </div>
+          </div>
         </div>
 
         <!-- Central Grid Panel -->
@@ -230,6 +237,10 @@
                   <button class="mode-tab-btn" data-mode="spare_parts">
                     <i data-lucide="package"></i>
                     <span>Spare Parts & Components</span>
+                  </button>
+                  <button class="mode-tab-btn" data-mode="troubleshooting">
+                    <i data-lucide="alert-triangle"></i>
+                    <span>Troubleshooting</span>
                   </button>
                 </div>
               </div>
@@ -300,6 +311,24 @@
                 </tr>
               </thead>
               <tbody id="spare-parts-table-body">
+                <!-- Javascript will inject rows dynamically -->
+              </tbody>
+            </table>
+            
+            <!-- Troubleshooting Table -->
+            <table class="data-table" id="troubleshooting-table" style="display: none;">
+              <thead>
+                <tr>
+                  <th style="width: 60px;">ID</th>
+                  <th style="width: 150px;">Equipment Title</th>
+                  <th style="width: 200px;">Sub-component</th>
+                  <th style="width: 200px;">Problem</th>
+                  <th style="width: 350px;">Root-cause / Solution</th>
+                  <th style="width: 70px;">Page</th>
+                  <th style="width: 70px; text-align: center;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="troubleshooting-table-body">
                 <!-- Javascript will inject rows dynamically -->
               </tbody>
             </table>
