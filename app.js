@@ -8,7 +8,7 @@ if (typeof pdfjsLib !== 'undefined') {
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
 }
 
-// Preloaded Sichuan Honghua JC70DB Drawworks High-Fidelity Dataset
+// Preloaded Sichuan Honghua EXAMPLE_EQUIPMENT_DO_NOT_COPY High-Fidelity Dataset
 let maintenanceRegistry = [];
 let sparePartsRegistry = [];
 let troubleshootingRegistry = [];
@@ -378,8 +378,8 @@ function isCleanSparePartsRow(row) {
 function isRecommendedSparePartsPage(pageText) {
   if (!pageText) return false;
   
-  // Exclude Table of Contents pages by checking for dot leaders or "table of contents"
-  if (/\.{4,}/.test(pageText) || /\.\s*\.\s*\.\s*\.\s*\./.test(pageText) || pageText.toLowerCase().includes("table of contents")) {
+  // Exclude explicit Table of Contents pages
+  if (pageText.toLowerCase().includes("table of contents") || pageText.toLowerCase().includes("index")) {
     return false;
   }
   
@@ -708,10 +708,9 @@ function escapeRegExp(string) {
 function shouldProcessPageWithLLM(pageText) {
   if (!pageText) return false;
   
-  // Reject Table of Contents / Index pages to prevent LLM hallucination
-  const tocRegex = /(\.{5,}|\.\s\.\s\.\s\.\s\.)/g;
-  const tocMatches = pageText.match(tocRegex);
-  if (tocMatches && tocMatches.length > 4) {
+  // Reject explicit Table of Contents / Index pages to prevent LLM hallucination
+  const lowerPageText = pageText.toLowerCase();
+  if (lowerPageText.includes("table of contents") || (lowerPageText.includes("index") && !lowerPageText.includes("part"))) {
     return false;
   }
 
@@ -759,8 +758,8 @@ Rules for "maintenance" tasks:
 
 Rules for "spare_parts":
 - Extract items that represent real spare parts, consumables, hardware, or components.
-- For "equipment_title", default to "${cleanDocName}" if not specified.
-- For "subsystem_location", identify the specific assembly or sub-system the part belongs to.
+- For "equipment_title", you MUST extract the explicit Table Title, Header, or Caption directly preceding the parts list (e.g. "EXAMPLE_TABLE_TITLE_DO_NOT_COPY"). Do not use random surrounding text. Default to "${cleanDocName}" if there is absolutely no title.
+- For "subsystem_location", identify the specific assembly or sub-system the part belongs to. If the table title explicitly mentions the assembly name, use it here.
 - For "part_name", extract the descriptive name of the component or part.
 - For "part_categorization", use "Critical Spare", "Consumable", or "Standard Part".
 - For "quantity", extract the number of units.
@@ -780,11 +779,13 @@ Rules for "troubleshooting" tasks:
 Response MUST be strictly valid JSON (and only JSON, with no other text before or after).
 CRITICAL EXCEPTION: Do NOT return empty arrays if you see actual part names accompanied by alphanumeric codes. You MUST extract them.
 
+CRITICAL INSTRUCTION: DO NOT use the values from the example output. If a field is missing or not found in the text, you MUST output "NA".
+
 Example Output Structure:
 {
   "maintenance": [
     {
-      "equipment_title": "JC70DB Drawworks",
+      "equipment_title": "EXAMPLE_EQUIPMENT_DO_NOT_COPY",
       "subsystem_component": "Main Brake Caliper",
       "maintenance_routine": "Daily",
       "checks_instructions": "Inspect for oil leaks."
@@ -792,18 +793,18 @@ Example Output Structure:
   ],
   "spare_parts": [
     {
-      "equipment_title": "12.BOP Control System",
+      "equipment_title": "EXAMPLE_EQUIPMENT_DO_NOT_COPY",
       "subsystem_location": "Regulator",
       "item_no": "1",
-      "part_name": "GB/T581-2000 M10x16",
-      "part_number_code": "GB/T581-2000",
+      "part_name": "EXAMPLE_PART_NAME_DO_NOT_COPY",
+      "part_number_code": "EXAMPLE_CODE",
       "part_categorization": "Consumable",
       "quantity": "1"
     }
   ],
   "troubleshooting": [
     {
-      "equipment_title": "12.BOP Control System",
+      "equipment_title": "EXAMPLE_EQUIPMENT_DO_NOT_COPY",
       "subsystem_component": "Regulator Valve",
       "problem": "Valve does not open",
       "root_cause_solution": "Air lock in line. Bleed air from the system."
@@ -827,6 +828,8 @@ You MUST strictly use the following 5 keys for every entry:
 
 Response MUST be strictly valid JSON (and only JSON, with no other text before or after).
 CRITICAL: Even if the page looks like a cover page, or the table is messy and handwritten, DO NOT return empty arrays! You MUST attempt to extract whatever handwritten notes, signatures, or dates are visible into the "maintenance" list.
+
+CRITICAL INSTRUCTION: DO NOT use the values from the example output. If a field is missing or not found in the text, output null or omit the field.
 
 Example Output Structure:
 {
