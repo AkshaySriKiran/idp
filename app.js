@@ -12,6 +12,7 @@ if (typeof pdfjsLib !== 'undefined') {
 let maintenanceRegistry = [];
 let sparePartsRegistry = [];
 let troubleshootingRegistry = [];
+let handwrittenNotesRegistry = [];
 let activeRegistryTab = "maintenance"; // "maintenance", "spare_parts", "troubleshooting"
 
 // Document storage for contextual searches
@@ -41,6 +42,7 @@ const troubleshootingTable = document.getElementById("troubleshooting-table");
 const maintenanceTableBody = document.getElementById("maintenance-table-body");
 const sparePartsTableBody = document.getElementById("spare-parts-table-body");
 const troubleshootingTableBody = document.getElementById("troubleshooting-table-body");
+const handwrittenNotesContainer = document.getElementById("handwritten-notes-container");
 const registryModeTabs = document.getElementById("registry-mode-tabs");
 const tableEmpty = document.getElementById("table-empty");
 const countRules = document.getElementById("count-rules");
@@ -48,6 +50,7 @@ const countParts = document.getElementById("count-parts");
 const countConsumables = document.getElementById("count-consumables");
 const countTime = document.getElementById("count-time");
 const countTroubleshooting = document.getElementById("count-troubleshooting");
+const countNotes = document.getElementById("count-notes");
 const filterTabs = document.getElementById("filter-tabs");
 const gridSearch = document.getElementById("grid-search");
 const addRowBtn = document.getElementById("add-row-btn");
@@ -78,16 +81,25 @@ if (registryModeTabs) {
       maintenanceTable.style.display = "table";
       sparePartsTable.style.display = "none";
       troubleshootingTable.style.display = "none";
+      handwrittenNotesContainer.style.display = "none";
       filterTabs.style.display = "flex";
     } else if (activeRegistryTab === "spare_parts") {
       maintenanceTable.style.display = "none";
       sparePartsTable.style.display = "table";
       troubleshootingTable.style.display = "none";
+      handwrittenNotesContainer.style.display = "none";
       filterTabs.style.display = "none";
     } else if (activeRegistryTab === "troubleshooting") {
       maintenanceTable.style.display = "none";
       sparePartsTable.style.display = "none";
       troubleshootingTable.style.display = "table";
+      handwrittenNotesContainer.style.display = "none";
+      filterTabs.style.display = "none";
+    } else if (activeRegistryTab === "handwritten_notes") {
+      maintenanceTable.style.display = "none";
+      sparePartsTable.style.display = "none";
+      troubleshootingTable.style.display = "none";
+      handwrittenNotesContainer.style.display = "block";
       filterTabs.style.display = "none";
     }
     
@@ -129,7 +141,13 @@ async function fetchManifest() {
       console.error("Failed to load equipment_manifest.json", res.status);
     }
   } catch (err) {
-    console.error("Error fetching equipment manifest:", err);
+    console.warn("Error fetching equipment manifest (likely file:// CORS block), using fallback.", err);
+    equipmentManifest = {
+      categories: {
+        "Default": { keywords: ["maintenance", "spare part"], partClasses: [] },
+        "Logbook": { keywords: ["logbook", "shift", "repair"], partClasses: [] }
+      }
+    };
   }
 }
 fetchManifest();
@@ -725,6 +743,32 @@ function shouldProcessPageWithLLM(pageText) {
   return keywords.some(kw => cleanText.includes(kw));
 }
 
+async function runOllamaRawTranscription(base64Image) {
+  const systemPrompt = `You are a strict OCR engine.
+DO NOT describe the image. DO NOT say "The image shows" or "This is a picture of".
+Your ONLY task is to read the characters and text written in the image and output them.
+If the handwriting is messy, make your absolute best guess at the characters.
+Output ONLY the transcribed text. Absolutely NO conversational text or descriptions.`;
+
+  const fetchBody = {
+    model: ollamaModel,
+    prompt: systemPrompt,
+    stream: false,
+    images: [base64Image],
+    options: { temperature: 0.1 }
+  };
+
+  const response = await fetch(`${ollamaUrl}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fetchBody)
+  });
+
+  if (!response.ok) throw new Error("Ollama network response was not ok");
+  const data = await response.json();
+  return data.response.trim();
+}
+
 // Query local Ollama API to extract structured parts & maintenance instructions
 async function runOllamaExtractor(text, docName, pageNum, base64Image = null) {
   if (isRecommendedSparePartsPage(text) && !base64Image) {
@@ -744,9 +788,10 @@ Your task is to analyze the text page content below and extract:
 1. Maintenance routines, checks, and instructions.
 2. Spare parts and components referenced in drawings or lists.
 3. Troubleshooting tables, problems, and root-cause/solutions.
+4. Handwritten notes or raw text if the document contains generic lists, logs, or unstructured notes.
 
-Group your extractions into three distinct JSON lists: "maintenance", "spare_parts", and "troubleshooting".
-CRITICAL OPTIMIZATION: If a field is missing, not specified, or not available in the text, you MUST OMIT the key entirely from the JSON object. Do NOT output keys with "NA", null, or empty values. This is critical to save generation time.
+Group your extractions into four distinct JSON lists: "maintenance", "spare_parts", "troubleshooting", and "handwritten_notes".
+CRITICAL INSTRUCTION: If a field is missing, not specified, or not available in the text, you MUST populate it with the string "NA". Do not use null, undefined, or empty values.
 
 Rules for "maintenance" tasks:
 - Extract real maintenance tasks, checks, inspection routines, adjustments, or replacements.
@@ -775,6 +820,9 @@ Rules for "troubleshooting" tasks:
 - For "subsystem_component", identify the specific sub-system.
 - For "problem", extract the symptom, fault, or issue described.
 - For "root_cause_solution", extract the combined root cause and solution / elimination method.
+
+Rules for "handwritten_notes":
+- If you see handwritten notes, general lists, or unstructured text, extract it verbatim as a single string into a field called "text".
 
 Response MUST be strictly valid JSON (and only JSON, with no other text before or after).
 CRITICAL EXCEPTION: Do NOT return empty arrays if you see actual part names accompanied by alphanumeric codes. You MUST extract them.
@@ -829,7 +877,7 @@ You MUST strictly use the following 5 keys for every entry:
 Response MUST be strictly valid JSON (and only JSON, with no other text before or after).
 CRITICAL: Even if the page looks like a cover page, or the table is messy and handwritten, DO NOT return empty arrays! You MUST attempt to extract whatever handwritten notes, signatures, or dates are visible into the "maintenance" list.
 
-CRITICAL INSTRUCTION: DO NOT use the values from the example output. If a field is missing or not found in the text, output null or omit the field.
+CRITICAL INSTRUCTION: DO NOT use the values from the example output. If a field is missing or not found in the text, you MUST output "NA".
 
 Example Output Structure:
 {
@@ -854,6 +902,7 @@ Text to parse:
 ${text}
 """`;
 
+  let cleanResponse = "";
   try {
     const fetchBody = {
       model: ollamaModel,
@@ -895,7 +944,7 @@ ${text}
     }
 
     const data = await response.json();
-    let cleanResponse = data.response.trim();
+    cleanResponse = data.response.trim();
     
     // Robust extraction of JSON object if wrapped in markdown formatting by smaller models
     const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
@@ -907,7 +956,8 @@ ${text}
     const output = {
       maintenance: [],
       spare_parts: [],
-      troubleshooting: []
+      troubleshooting: [],
+      handwritten_notes: []
     };
 
     if (resultJson.maintenance && Array.isArray(resultJson.maintenance)) {
@@ -973,6 +1023,14 @@ ${text}
           page: pageNum
         };
       });
+    }
+
+    if (resultJson.handwritten_notes && Array.isArray(resultJson.handwritten_notes)) {
+      output.handwritten_notes = resultJson.handwritten_notes.map(item => ({
+        id: 0,
+        text: sanitizeVal(item.text),
+        page: pageNum
+      }));
     }
 
     // Filter out incomplete/placeholder rows with no valid data
@@ -1051,6 +1109,7 @@ function renderMarkdown(text) {
   countConsumables.innerText = consumables;
   countTime.innerText = timeBased;
   countTroubleshooting.innerText = troubleshootingRegistry.length;
+  countNotes.innerText = handwrittenNotesRegistry.length;
 }
 
 function renderGrid() {
@@ -1228,6 +1287,33 @@ function renderGrid() {
         troubleshootingTableBody.appendChild(tr);
       });
     }
+  } else if (activeRegistryTab === "handwritten_notes") {
+    // Handwritten Notes Tab
+    handwrittenNotesContainer.innerHTML = "";
+    
+    filtered = handwrittenNotesRegistry.filter(row => {
+      // 1. Search Text Query
+      if (currentSearchQuery) {
+        const q = currentSearchQuery.toLowerCase();
+        if (!row.text.toLowerCase().includes(q)) return false;
+      }
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      tableEmpty.style.display = "flex";
+    } else {
+      tableEmpty.style.display = "none";
+      let html = "";
+      filtered.forEach((row, idx) => {
+        html += `<div style="margin-bottom: 2rem;">
+          <h4 style="color: var(--accent-orange); margin-bottom: 0.5rem;">Note ${idx + 1} <span style="font-size: 0.8rem; color: var(--text-dark);">[Page ${row.page}]</span></h4>
+          <div>${escapeHTML(row.text)}</div>
+        </div>
+        <hr style="border-color: rgba(255,255,255,0.1); margin-bottom: 2rem;" />`;
+      });
+      handwrittenNotesContainer.innerHTML = html;
+    }
   }
   
   safeCreateIcons();
@@ -1276,8 +1362,10 @@ function attachTableListeners() {
         let record;
         if (activeRegistryTab === "maintenance") {
           record = maintenanceRegistry.find(r => r.id === id);
-        } else {
+        } else if (activeRegistryTab === "spare_parts") {
           record = sparePartsRegistry.find(r => r.id === id);
+        } else if (activeRegistryTab === "troubleshooting") {
+          record = troubleshootingRegistry.find(r => r.id === id);
         }
         
         if (record) {
@@ -1593,8 +1681,8 @@ fileInput.addEventListener('change', (e) => {
 async function handleFileUpload(file) {
   const extension = file.name.split('.').pop().toLowerCase();
   
-  if (extension !== 'pdf' && extension !== 'txt') {
-    alert("Unsupported file format! Please upload a PDF or TXT manual.");
+  if (extension !== 'pdf' && extension !== 'txt' && extension !== 'jpg' && extension !== 'jpeg' && extension !== 'png') {
+    alert("Unsupported file format! Please upload a PDF, TXT, or Image (JPG/PNG).");
     return;
   }
 
@@ -1607,8 +1695,10 @@ async function handleFileUpload(file) {
   try {
     if (extension === 'pdf') {
       await extractPDFText(file);
-    } else {
+    } else if (extension === 'txt') {
       await extractTXTText(file);
+    } else {
+      await extractImageText(file);
     }
   } catch (error) {
     console.error(error);
@@ -1688,6 +1778,7 @@ function extractTXTText(file) {
                 const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
                 result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
                 troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+                handwrittenNotesRegistry = [...handwrittenNotesRegistry, ...(result.handwritten_notes || [])];
               }
               renderGrid();
             }
@@ -1717,6 +1808,7 @@ function extractTXTText(file) {
                 const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
                 result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
                 troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+                handwrittenNotesRegistry = [...handwrittenNotesRegistry, ...(result.handwritten_notes || [])];
               }
             }
           }
@@ -1740,6 +1832,7 @@ function extractTXTText(file) {
             const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
             result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
             troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+            handwrittenNotesRegistry = [...handwrittenNotesRegistry, ...(result.handwritten_notes || [])];
           }
         }
         
@@ -1877,6 +1970,7 @@ function extractPDFText(file) {
                 const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
                 result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
                 troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+                handwrittenNotesRegistry = [...handwrittenNotesRegistry, ...(result.handwritten_notes || [])];
               }
               renderGrid();
             } catch (err) {
@@ -1903,6 +1997,7 @@ function extractPDFText(file) {
               const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
               result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
               troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+              handwrittenNotesRegistry = [...handwrittenNotesRegistry, ...(result.handwritten_notes || [])];
             }
             renderGrid();
           }
@@ -1938,6 +2033,76 @@ function extractPDFText(file) {
     };
     
     fileReader.readAsArrayBuffer(file);
+  });
+}
+
+async function extractImageText(file) {
+  if (isExtracting) {
+    alert("An extraction is already in progress.");
+    return;
+  }
+  isExtracting = true;
+  
+  return new Promise((resolve, reject) => {
+    const fileReader = new FileReader();
+    
+    fileReader.onload = async function() {
+      try {
+        const base64Data = fileReader.result.split(',')[1];
+        
+        progressFill.style.width = "50%";
+        progressStatus.innerText = `Analyzing image with ${ollamaModel}...`;
+        
+        let maintCount = 0;
+        let sparesCount = 0;
+        let troubleCount = 0;
+        let notesCount = 0;
+
+        if (engineMode === "ollama") {
+          try {
+            const rawText = await runOllamaRawTranscription(base64Data);
+            
+            if (rawText && rawText.length > 0) {
+              notesCount = 1;
+              handwrittenNotesRegistry.push({
+                id: handwrittenNotesRegistry.length > 0 ? Math.max(...handwrittenNotesRegistry.map(r => r.id)) + 1 : 1,
+                text: rawText,
+                page: 1
+              });
+            }
+            renderGrid();
+          } catch (err) {
+            console.warn(`Ollama failed on image:`, err);
+            appendChatSystemMessage(`⚠️ **Image Warning**: Failed to parse with Ollama. Ensure you are using a vision model.`);
+          }
+        } else {
+          appendChatSystemMessage(`⚠️ **Image Processing**: Heuristics engine cannot process images. Please select 'local LLM' and use a Vision model.`);
+        }
+        
+        progressFill.style.width = "100%";
+        progressStatus.innerText = `Extraction finished!`;
+        
+        setTimeout(() => {
+          progressOverlay.classList.remove("active");
+          activeDocName.querySelector("span").innerText = file.name;
+          activeDocName.style.borderColor = "var(--accent-cyan-glow)";
+          activeDocName.style.color = "var(--accent-cyan)";
+          activeDocName.style.background = "hsla(190, 90%, 50%, 0.05)";
+          
+          appendChatSystemMessage(`Completed client-side image processing for **"${file.name}"** using **local LLM (${ollamaModel})**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, **${troubleCount}** troubleshooting issues, and **${notesCount}** handwritten notes into the registries.`);
+          
+          renderGrid();
+          isExtracting = false;
+          resolve();
+        }, 1200);
+
+      } catch (err) {
+        isExtracting = false;
+        reject(err);
+      }
+    };
+    
+    fileReader.readAsDataURL(file);
   });
 }
 
@@ -2075,8 +2240,8 @@ function runRuleExtractorHeuristics(text, docName, pageNum = 1) {
   });
 
   // Filter out incomplete/placeholder rows with no valid data
-  output.maintenance = output.maintenance.filter(isCleanMaintenanceRow).slice(0, 10);
-  output.spare_parts = output.spare_parts.filter(isCleanSparePartsRow).slice(0, 10);
+  output.maintenance = output.maintenance.filter(isCleanMaintenanceRow);
+  output.spare_parts = output.spare_parts.filter(isCleanSparePartsRow);
   return normalizeExtraction(output);
 }
 
