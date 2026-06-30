@@ -654,7 +654,7 @@ html, body {
 /* stats panel styling */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 1.25rem;
 }
 
@@ -698,10 +698,20 @@ html, body {
   border: 1px solid var(--accent-amber-glow);
   color: var(--accent-amber);
 }
+.red-glow {
+  background: hsla(0, 84%, 60%, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+}
 .purple-glow {
   background: hsla(270, 90%, 65%, 0.15);
   border: 1px solid var(--accent-purple-glow);
   color: var(--accent-purple);
+}
+.orange-glow {
+  background: hsla(25, 90%, 60%, 0.15);
+  border: 1px solid rgba(249, 115, 22, 0.4);
+  color: #f97316;
 }
 
 .stat-info {

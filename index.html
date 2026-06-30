@@ -60,7 +60,7 @@
         
         <!-- Drag & Drop Upload Card -->
         <div class="glass-card upload-card" id="drop-zone">
-          <input type="file" id="file-input" accept=".pdf,.txt" style="display: none;">
+          <input type="file" id="file-input" accept=".pdf,.txt,.jpg,.jpeg,.png" style="display: none;">
           <div class="upload-content">
             <div class="upload-icon-wrapper">
               <i data-lucide="upload-cloud" class="upload-icon"></i>
@@ -222,6 +222,13 @@
               <h2 class="stat-value" id="count-troubleshooting">0</h2>
             </div>
           </div>
+          <div class="stat-card">
+            <div class="stat-icon-wrapper orange-glow"><i data-lucide="pen-tool"></i></div>
+            <div class="stat-info">
+              <span class="stat-label">Notes Extracted</span>
+              <h2 class="stat-value" id="count-notes">0</h2>
+            </div>
+          </div>
         </div>
 
         <!-- Central Grid Panel -->
@@ -241,6 +248,10 @@
                   <button class="mode-tab-btn" data-mode="troubleshooting">
                     <i data-lucide="alert-triangle"></i>
                     <span>Troubleshooting</span>
+                  </button>
+                  <button class="mode-tab-btn" data-mode="handwritten_notes">
+                    <i data-lucide="pen-tool"></i>
+                    <span>Handwritten Notes</span>
                   </button>
                 </div>
               </div>
@@ -332,6 +343,9 @@
                 <!-- Javascript will inject rows dynamically -->
               </tbody>
             </table>
+            
+            <!-- Handwritten Notes Container -->
+            <div id="handwritten-notes-container" style="display: none; padding: 1.5rem; background: var(--bg-glass); border-radius: 8px; color: var(--text-light); white-space: pre-wrap; font-family: monospace; overflow-y: auto; max-height: 600px;"></div>
             
             <!-- Empty state -->
             <div class="table-empty-state" id="table-empty" style="display: none;">
