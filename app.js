@@ -12,7 +12,6 @@ if (typeof pdfjsLib !== 'undefined') {
 let maintenanceRegistry = [];
 let sparePartsRegistry = [];
 let troubleshootingRegistry = [];
-let handwrittenNotesRegistry = [];
 let activeRegistryTab = "maintenance"; // "maintenance", "spare_parts", "troubleshooting"
 
 // Document storage for contextual searches
@@ -42,7 +41,6 @@ const troubleshootingTable = document.getElementById("troubleshooting-table");
 const maintenanceTableBody = document.getElementById("maintenance-table-body");
 const sparePartsTableBody = document.getElementById("spare-parts-table-body");
 const troubleshootingTableBody = document.getElementById("troubleshooting-table-body");
-const handwrittenNotesContainer = document.getElementById("handwritten-notes-container");
 const registryModeTabs = document.getElementById("registry-mode-tabs");
 const tableEmpty = document.getElementById("table-empty");
 const countRules = document.getElementById("count-rules");
@@ -50,7 +48,6 @@ const countParts = document.getElementById("count-parts");
 const countConsumables = document.getElementById("count-consumables");
 const countTime = document.getElementById("count-time");
 const countTroubleshooting = document.getElementById("count-troubleshooting");
-const countNotes = document.getElementById("count-notes");
 const filterTabs = document.getElementById("filter-tabs");
 const gridSearch = document.getElementById("grid-search");
 const addRowBtn = document.getElementById("add-row-btn");
@@ -81,25 +78,16 @@ if (registryModeTabs) {
       maintenanceTable.style.display = "table";
       sparePartsTable.style.display = "none";
       troubleshootingTable.style.display = "none";
-      handwrittenNotesContainer.style.display = "none";
       filterTabs.style.display = "flex";
     } else if (activeRegistryTab === "spare_parts") {
       maintenanceTable.style.display = "none";
       sparePartsTable.style.display = "table";
       troubleshootingTable.style.display = "none";
-      handwrittenNotesContainer.style.display = "none";
       filterTabs.style.display = "none";
     } else if (activeRegistryTab === "troubleshooting") {
       maintenanceTable.style.display = "none";
       sparePartsTable.style.display = "none";
       troubleshootingTable.style.display = "table";
-      handwrittenNotesContainer.style.display = "none";
-      filterTabs.style.display = "none";
-    } else if (activeRegistryTab === "handwritten_notes") {
-      maintenanceTable.style.display = "none";
-      sparePartsTable.style.display = "none";
-      troubleshootingTable.style.display = "none";
-      handwrittenNotesContainer.style.display = "block";
       filterTabs.style.display = "none";
     }
     
@@ -781,16 +769,13 @@ async function runOllamaExtractor(text, docName, pageNum, base64Image = null) {
 
   
 
-  const cleanDocName = docName ? docName.replace(/\.[^/.]+$/, "") : "NA";
-  
-  let systemPrompt = `You are an expert technical parser of industrial engineering manuals.
+  const cleanDocName = docName ? docName.replace(/\.[^/.]+$/, "") : "NA";  let systemPrompt = `You are an expert technical parser of industrial engineering manuals.
 Your task is to analyze the text page content below and extract:
 1. Maintenance routines, checks, and instructions.
 2. Spare parts and components referenced in drawings or lists.
 3. Troubleshooting tables, problems, and root-cause/solutions.
-4. Handwritten notes or raw text if the document contains generic lists, logs, or unstructured notes.
 
-Group your extractions into four distinct JSON lists: "maintenance", "spare_parts", "troubleshooting", and "handwritten_notes".
+Group your extractions into three distinct JSON lists: "maintenance", "spare_parts", and "troubleshooting".
 CRITICAL INSTRUCTION: If a field is missing, not specified, or not available in the text, you MUST populate it with the string "NA". Do not use null, undefined, or empty values.
 
 Rules for "maintenance" tasks:
@@ -819,10 +804,7 @@ Rules for "troubleshooting" tasks:
 - For "equipment_title", default to "${cleanDocName}" if not specified.
 - For "subsystem_component", identify the specific sub-system.
 - For "problem", extract the symptom, fault, or issue described.
-- For "root_cause_solution", extract the combined root cause and solution / elimination method.
-
-Rules for "handwritten_notes":
-- If you see handwritten notes, general lists, or unstructured text, extract it verbatim as a single string into a field called "text".
+- For "root_cause_solution", extract the combined root cause and solution / elimination method.`xt".
 
 Response MUST be strictly valid JSON (and only JSON, with no other text before or after).
 CRITICAL EXCEPTION: Do NOT return empty arrays if you see actual part names accompanied by alphanumeric codes. You MUST extract them.
@@ -956,8 +938,7 @@ ${text}
     const output = {
       maintenance: [],
       spare_parts: [],
-      troubleshooting: [],
-      handwritten_notes: []
+      troubleshooting: []
     };
 
     if (resultJson.maintenance && Array.isArray(resultJson.maintenance)) {
@@ -1025,13 +1006,7 @@ ${text}
       });
     }
 
-    if (resultJson.handwritten_notes && Array.isArray(resultJson.handwritten_notes)) {
-      output.handwritten_notes = resultJson.handwritten_notes.map(item => ({
-        id: 0,
-        text: sanitizeVal(item.text),
-        page: pageNum
-      }));
-    }
+
 
     // Filter out incomplete/placeholder rows with no valid data
     output.maintenance = output.maintenance.filter(isCleanMaintenanceRow);
@@ -1109,7 +1084,6 @@ function renderMarkdown(text) {
   countConsumables.innerText = consumables;
   countTime.innerText = timeBased;
   countTroubleshooting.innerText = troubleshootingRegistry.length;
-  countNotes.innerText = handwrittenNotesRegistry.length;
 }
 
 function renderGrid() {
@@ -1286,33 +1260,6 @@ function renderGrid() {
         `;
         troubleshootingTableBody.appendChild(tr);
       });
-    }
-  } else if (activeRegistryTab === "handwritten_notes") {
-    // Handwritten Notes Tab
-    handwrittenNotesContainer.innerHTML = "";
-    
-    filtered = handwrittenNotesRegistry.filter(row => {
-      // 1. Search Text Query
-      if (currentSearchQuery) {
-        const q = currentSearchQuery.toLowerCase();
-        if (!row.text.toLowerCase().includes(q)) return false;
-      }
-      return true;
-    });
-
-    if (filtered.length === 0) {
-      tableEmpty.style.display = "flex";
-    } else {
-      tableEmpty.style.display = "none";
-      let html = "";
-      filtered.forEach((row, idx) => {
-        html += `<div style="margin-bottom: 2rem;">
-          <h4 style="color: var(--accent-orange); margin-bottom: 0.5rem;">Note ${idx + 1} <span style="font-size: 0.8rem; color: var(--text-dark);">[Page ${row.page}]</span></h4>
-          <div>${escapeHTML(row.text)}</div>
-        </div>
-        <hr style="border-color: rgba(255,255,255,0.1); margin-bottom: 2rem;" />`;
-      });
-      handwrittenNotesContainer.innerHTML = html;
     }
   }
   
@@ -1678,6 +1625,8 @@ fileInput.addEventListener('change', (e) => {
   }
 });
 
+
+
 async function handleFileUpload(file) {
   const extension = file.name.split('.').pop().toLowerCase();
   
@@ -1706,6 +1655,8 @@ async function handleFileUpload(file) {
     progressOverlay.classList.remove("active");
   }
 }
+
+
 
 // Read plain text manual
 function extractTXTText(file) {
@@ -1778,7 +1729,6 @@ function extractTXTText(file) {
                 const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
                 result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
                 troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
-                handwrittenNotesRegistry = [...handwrittenNotesRegistry, ...(result.handwritten_notes || [])];
               }
               renderGrid();
             }
@@ -1808,7 +1758,6 @@ function extractTXTText(file) {
                 const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
                 result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
                 troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
-                handwrittenNotesRegistry = [...handwrittenNotesRegistry, ...(result.handwritten_notes || [])];
               }
             }
           }
@@ -1832,7 +1781,6 @@ function extractTXTText(file) {
             const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
             result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
             troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
-            handwrittenNotesRegistry = [...handwrittenNotesRegistry, ...(result.handwritten_notes || [])];
           }
         }
         
@@ -1970,7 +1918,6 @@ function extractPDFText(file) {
                 const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
                 result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
                 troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
-                handwrittenNotesRegistry = [...handwrittenNotesRegistry, ...(result.handwritten_notes || [])];
               }
               renderGrid();
             } catch (err) {
@@ -1997,7 +1944,6 @@ function extractPDFText(file) {
               const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
               result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
               troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
-              handwrittenNotesRegistry = [...handwrittenNotesRegistry, ...(result.handwritten_notes || [])];
             }
             renderGrid();
           }
@@ -2060,15 +2006,24 @@ async function extractImageText(file) {
 
         if (engineMode === "ollama") {
           try {
-            const rawText = await runOllamaRawTranscription(base64Data);
-            
-            if (rawText && rawText.length > 0) {
-              notesCount = 1;
-              handwrittenNotesRegistry.push({
-                id: handwrittenNotesRegistry.length > 0 ? Math.max(...handwrittenNotesRegistry.map(r => r.id)) + 1 : 1,
-                text: rawText,
-                page: 1
-              });
+            const result = await runOllamaExtractor("OCR VISION EXTRACTION", file.name, 1, base64Data);
+            if (result.maintenance && result.maintenance.length > 0) {
+              maintCount += result.maintenance.length;
+              const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
+              result.maintenance.forEach((r, rIdx) => r.id = startingId + rIdx);
+              maintenanceRegistry = [...maintenanceRegistry, ...result.maintenance];
+            }
+            if (result.spare_parts && result.spare_parts.length > 0) {
+              sparesCount += result.spare_parts.length;
+              const startingId = sparePartsRegistry.length > 0 ? Math.max(...sparePartsRegistry.map(r => r.id)) + 1 : 1;
+              result.spare_parts.forEach((r, rIdx) => r.id = startingId + rIdx);
+              sparePartsRegistry = [...sparePartsRegistry, ...result.spare_parts];
+            }
+            if (result.troubleshooting && result.troubleshooting.length > 0) {
+              troubleCount += result.troubleshooting.length;
+              const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
+              result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
+              troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
             }
             renderGrid();
           } catch (err) {
@@ -2089,7 +2044,7 @@ async function extractImageText(file) {
           activeDocName.style.color = "var(--accent-cyan)";
           activeDocName.style.background = "hsla(190, 90%, 50%, 0.05)";
           
-          appendChatSystemMessage(`Completed client-side image processing for **"${file.name}"** using **local LLM (${ollamaModel})**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, **${troubleCount}** troubleshooting issues, and **${notesCount}** handwritten notes into the registries.`);
+          appendChatSystemMessage(`Completed client-side image processing for **"${file.name}"** using **local LLM (${ollamaModel})**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
           
           renderGrid();
           isExtracting = false;
@@ -2279,7 +2234,7 @@ function appendChatSystemMessage(text) {
   msg.innerHTML = `
     <div class="msg-avatar"><i data-lucide="bot"></i></div>
     <div class="msg-content" style="border-color: var(--accent-green-glow); background: hsla(145, 80%, 48%, 0.03);">
-      <p>${text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}</p>
+      <p>${escapeHTML(text).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}</p>
     </div>
   `;
   chatMessages.appendChild(msg);
@@ -2524,7 +2479,7 @@ function appendAssistantReply(text) {
   msg.innerHTML = `
     <div class="msg-avatar"><i data-lucide="bot"></i></div>
     <div class="msg-content">
-      <p>${text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}</p>
+      <p>${escapeHTML(text).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}</p>
     </div>
   `;
   chatMessages.appendChild(msg);
