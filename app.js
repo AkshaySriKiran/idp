@@ -769,7 +769,8 @@ async function runOllamaExtractor(text, docName, pageNum, base64Image = null) {
 
   
 
-  const cleanDocName = docName ? docName.replace(/\.[^/.]+$/, "") : "NA";  let systemPrompt = `You are an expert technical parser of industrial engineering manuals.
+  const cleanDocName = docName ? docName.replace(/\.[^/.]+$/, "") : "NA";
+  let systemPrompt = `You are an expert technical parser of industrial engineering manuals.
 Your task is to analyze the text page content below and extract:
 1. Maintenance routines, checks, and instructions.
 2. Spare parts and components referenced in drawings or lists.
@@ -804,7 +805,7 @@ Rules for "troubleshooting" tasks:
 - For "equipment_title", default to "${cleanDocName}" if not specified.
 - For "subsystem_component", identify the specific sub-system.
 - For "problem", extract the symptom, fault, or issue described.
-- For "root_cause_solution", extract the combined root cause and solution / elimination method.`xt".
+- For "root_cause_solution", extract the combined root cause and solution / elimination method.
 
 Response MUST be strictly valid JSON (and only JSON, with no other text before or after).
 CRITICAL EXCEPTION: Do NOT return empty arrays if you see actual part names accompanied by alphanumeric codes. You MUST extract them.
