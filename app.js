@@ -357,6 +357,68 @@ function normalizeExtraction(output) {
   return output;
 }
 
+function looksLikeProcurementOrIndexMeta(text) {
+  const s = String(text || "").toLowerCase().trim();
+  if (!s) return false;
+
+  // Generic metadata-style language rather than document-specific phrases.
+  const metaTokenHits = (s.match(/\b(project|order|serial|manufactur|nameplate|code|index|material|required|identification|reference)\b/g) || []).length;
+  const partTokenHits = (s.match(/\b(gasket|seal|bearing|plate|bolt|nut|screw|filter|valve|ring|liner|pump|shaft|gear|coupling|hose)\b/g) || []).length;
+  const hasActionVerb = /\b(inspect|check|replace|clean|lubricate|tighten|remove|install|test|flush)\b/.test(s);
+  const endsWithPageNum = /(?:\.{2,}\s*)?\d{1,3}$/.test(s);
+
+  // Index/metadata labels usually have metadata tokens, few hardware terms, and no action verbs.
+  if (metaTokenHits >= 2 && partTokenHits === 0 && !hasActionVerb) return true;
+  if (metaTokenHits >= 3 && !hasActionVerb) return true;
+  if (endsWithPageNum && metaTokenHits >= 1 && !hasActionVerb) return true;
+  return false;
+}
+
+function extractContentTokens(text) {
+  const stop = new Set([
+    "the", "and", "for", "with", "from", "into", "that", "this", "then", "than",
+    "are", "was", "were", "have", "has", "had", "will", "shall", "should", "can",
+    "must", "not", "all", "any", "page", "unit", "system", "check", "inspect"
+  ]);
+  const tokens = String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(t => t && !stop.has(t) && (t.length >= 4 || /^\d+$/.test(t)));
+  return Array.from(new Set(tokens));
+}
+
+function isTextGroundedInSource(candidateText, sourceText) {
+  const source = String(sourceText || "").toLowerCase();
+  if (!source.trim()) return false;
+  const tokens = extractContentTokens(candidateText);
+  if (tokens.length === 0) return false;
+
+  const matchedTokens = tokens.filter(t => source.includes(t));
+  const tokenThreshold = Math.max(2, Math.ceil(tokens.length * 0.45));
+  const tokenOk = matchedTokens.length >= tokenThreshold;
+
+  // Additional phrase check helps reject fluent hallucinations built from sparse index labels.
+  const words = String(candidateText || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length >= 4);
+  let phraseOk = false;
+  if (words.length >= 4) {
+    for (let i = 0; i <= words.length - 2; i++) {
+      const bigram = `${words[i]} ${words[i + 1]}`.trim();
+      if (bigram.length >= 9 && source.includes(bigram)) {
+        phraseOk = true;
+        break;
+      }
+    }
+  } else {
+    phraseOk = tokenOk;
+  }
+  return tokenOk && phraseOk;
+}
+
 function isCleanMaintenanceRow(row) {
   if (activeEquipmentCategory === "Logbook") {
     const desc = sanitizeVal(row.maintenance_work_description);
@@ -367,6 +429,9 @@ function isCleanMaintenanceRow(row) {
   if (comp === "NA") return false;
   const checks = sanitizeVal(row.checks_instructions);
   if (checks === "NA") return false;
+  if (looksLikeProcurementOrIndexMeta(checks)) {
+    return false;
+  }
   return true;
 }
 
@@ -376,6 +441,15 @@ function isCleanSparePartsRow(row) {
   const code = sanitizeVal(row.part_number_code);
   const dwg = sanitizeVal(row.drawing_model_no);
   if (name === "NA" && code === "NA" && dwg === "NA") return false;
+
+  const lowerName = name.toLowerCase();
+  const lowerCode = code.toLowerCase();
+  const lowerDwg = dwg.toLowerCase();
+  const hasStrongCode = code !== "NA" && /[0-9]/.test(code) && !lowerCode.includes("na");
+  const hasDrawingRef = dwg !== "NA" && !lowerDwg.includes("na");
+  if (looksLikeProcurementOrIndexMeta(name) && !hasStrongCode && !hasDrawingRef) {
+    return false;
+  }
   return true;
 }
 
@@ -710,9 +784,100 @@ function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function isLikelyIndexOrTOCPage(pageText, pageNum = null) {
+  if (!pageText) return false;
+
+  const text = String(pageText);
+  const lower = text.toLowerCase();
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  if (lower.includes("table of contents")) return true;
+
+  const dotLeaderCount = (text.match(/\.{3,}/g) || []).length;
+  const pageRefCount = (lower.match(/\bpage\s+\d{1,3}\b/g) || []).length;
+  const contentsWordCount = (lower.match(/\bcontents?\b/g) || []).length;
+  const indexWordCount = (lower.match(/\bindex\b/g) || []).length;
+  const numberedEntryCount = (text.match(/[A-Za-z][A-Za-z0-9 ,\-\/\(\)]{10,120}(?:\.{2,}\s*|\s{2,})\d{1,3}\b/g) || []).length;
+  const sectionEntryCount = (lower.match(/\b(?:chapter|section|appendix|figure|fig\.?|table)\s*[a-z0-9\.\-]{0,12}\s+[a-z][^.!?\n]{0,80}\s+\d{1,3}\b/g) || []).length;
+  const tocLineCount = lines.filter(l => /(?:\.{2,}\s*)?\d{1,3}$/.test(l) && /[a-z]/i.test(l) && l.length > 8).length;
+  const headingLikeLineCount = lines.filter(l => /^(?:\d+(?:\.\d+)*)\s+[A-Za-z]/.test(l) && !/[.!?]/.test(l)).length;
+  const shortLineCount = lines.filter(l => l.split(/\s+/).length <= 14).length;
+  const trailingPageNumLineCount = lines.filter(l => /\b\d{1,3}$/.test(l) && l.split(/\s+/).length <= 16).length;
+  const frontMatter = typeof pageNum === "number" && pageNum <= 8;
+
+  if (dotLeaderCount >= 3) return true;
+  if (sectionEntryCount >= 4) return true;
+  if ((contentsWordCount > 0 || indexWordCount > 0) && numberedEntryCount >= 4) return true;
+  if ((pageRefCount + numberedEntryCount) >= 8 && (dotLeaderCount >= 1 || contentsWordCount > 0 || indexWordCount > 0)) return true;
+  // Continuation index pages often have many short heading lines ending with page numbers.
+  if (tocLineCount >= 6 && headingLikeLineCount >= 4) return true;
+  // Front-matter continuation index: lots of short lines that terminate in page numbers.
+  if (frontMatter && trailingPageNumLineCount >= 6 && shortLineCount >= 8) return true;
+
+  return false;
+}
+
+function buildTextFromPdfTextContent(textContent) {
+  if (!textContent || !Array.isArray(textContent.items)) return "";
+  const items = textContent.items
+    .map(item => ({
+      str: String(item.str || "").trim(),
+      x: Array.isArray(item.transform) ? Number(item.transform[4]) || 0 : 0,
+      y: Array.isArray(item.transform) ? Number(item.transform[5]) || 0 : 0,
+      hasEOL: Boolean(item.hasEOL)
+    }))
+    .filter(item => item.str.length > 0);
+
+  if (items.length === 0) return "";
+
+  // Prefer explicit line breaks when available.
+  if (items.some(item => item.hasEOL)) {
+    const lines = [];
+    let currentLine = "";
+    items.forEach(item => {
+      currentLine += (currentLine ? " " : "") + item.str;
+      if (item.hasEOL) {
+        lines.push(currentLine.trim());
+        currentLine = "";
+      }
+    });
+    if (currentLine) lines.push(currentLine.trim());
+    return lines.join("\n");
+  }
+
+  // Fallback: cluster items by y-position to reconstruct line-aware text.
+  const sorted = [...items].sort((a, b) => {
+    if (Math.abs(a.y - b.y) > 1.2) return b.y - a.y;
+    return a.x - b.x;
+  });
+  const lines = [];
+  let current = [];
+  let currentY = sorted[0].y;
+  const yTolerance = 2.0;
+
+  sorted.forEach(item => {
+    if (Math.abs(item.y - currentY) > yTolerance) {
+      if (current.length > 0) {
+        current.sort((a, b) => a.x - b.x);
+        lines.push(current.map(t => t.str).join(" ").trim());
+      }
+      current = [item];
+      currentY = item.y;
+    } else {
+      current.push(item);
+    }
+  });
+  if (current.length > 0) {
+    current.sort((a, b) => a.x - b.x);
+    lines.push(current.map(t => t.str).join(" ").trim());
+  }
+  return lines.filter(Boolean).join("\n");
+}
+
 
 function shouldProcessPageWithLLM(pageText) {
   if (!pageText) return false;
+  if (isLikelyIndexOrTOCPage(pageText)) return false;
   
   // Reject explicit Table of Contents / Index pages to prevent LLM hallucination
   const lowerPageText = pageText.toLowerCase();
@@ -789,6 +954,8 @@ Rules for "maintenance" tasks:
 
 Rules for "spare_parts":
 - Extract items that represent real spare parts, consumables, hardware, or components.
+- DO NOT extract ordering metadata, procurement fields, or identification labels as parts.
+- Reject list labels or ordering metadata unless there is clear evidence of an actual physical part (for example a concrete component name with valid part/drawing reference context).
 - For "equipment_title", you MUST extract the explicit Table Title, Header, or Caption directly preceding the parts list (e.g. "EXAMPLE_TABLE_TITLE_DO_NOT_COPY"). Do not use random surrounding text. Default to "${cleanDocName}" if there is absolutely no title.
 - For "subsystem_location", identify the specific assembly or sub-system the part belongs to. If the table title explicitly mentions the assembly name, use it here.
 - For "part_name", extract the descriptive name of the component or part.
@@ -1021,6 +1188,20 @@ ${text}
          !r.problem.toLowerCase().includes("... ...") &&
          !r.problem.toLowerCase().includes(". . . .")
        );
+    }
+
+    // Guardrail: non-OCR pages must be text-grounded to reduce index/TOC hallucinations.
+    if (!base64Image) {
+      const sourcePageText = String(text || "");
+      output.maintenance = output.maintenance.filter(r => isTextGroundedInSource(r.checks_instructions, sourcePageText));
+      output.spare_parts = output.spare_parts.filter(r => {
+        const probe = `${r.part_name} ${r.part_number_code} ${r.drawing_model_no}`;
+        return isTextGroundedInSource(probe, sourcePageText);
+      });
+      output.troubleshooting = output.troubleshooting.filter(r => {
+        const probe = `${r.problem} ${r.root_cause_solution}`;
+        return isTextGroundedInSource(probe, sourcePageText);
+      });
     }
 
     return normalizeExtraction(output);
@@ -1848,6 +2029,7 @@ function extractPDFText(file) {
         let sparesCount = 0;
         let troubleCount = 0;
         let llmPagesProcessed = 0;
+        let prevPageWasIndex = false;
 
         for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
           if (abortExtraction) {
@@ -1880,11 +2062,20 @@ function extractPDFText(file) {
             pageText = "OCR VISION EXTRACTION - Use provided image to extract text.";
           } else {
             const textContent = await page.getTextContent();
-            pageText = textContent.items.map(item => item.str).join(" ");
+            pageText = buildTextFromPdfTextContent(textContent);
           }
           
           loadedPages.push({ pageNum: pageNum, text: pageText });
           compiledText += ` ${pageText}`;
+
+          const isIndexPage = isLikelyIndexOrTOCPage(pageText, pageNum);
+          const isLikelyContinuation = prevPageWasIndex && pageNum <= 8 && (pageText.match(/(?:\.{2,}\s*)?\d{1,3}\b/g) || []).length >= 5;
+          if (isIndexPage || isLikelyContinuation) {
+            prevPageWasIndex = true;
+            console.log(`Skipping Page ${pageNum}: detected as TOC/Index page.`);
+            continue;
+          }
+          prevPageWasIndex = false;
 
           if (engineMode === "ollama") {
             if (parseStrategy === "ocr" && pageNum === 1) {
@@ -2064,6 +2255,14 @@ async function extractImageText(file) {
 
 // Cognitive Contextual Text Extraction Heuristics
 function runRuleExtractorHeuristics(text, docName, pageNum = 1) {
+  if (isLikelyIndexOrTOCPage(text, pageNum)) {
+    return {
+      maintenance: [],
+      spare_parts: [],
+      troubleshooting: []
+    };
+  }
+
   if (isRecommendedSparePartsPage(text)) {
     const spareParts = parseSparePartsStructurally(text, docName, pageNum);
     return {
@@ -2123,7 +2322,8 @@ function runRuleExtractorHeuristics(text, docName, pageNum = 1) {
     const isHeaderOrIndicator = /^\b(table|figure|fig|section|drawing|dwg|no)\b|^\d+(\.\d+)*\b/i.test(cleanSentence);
     const isGenericHeader = /check items|maintenance regulations|troubleshooting methods|common troubles|trouble phenomena|check before|inspection before|periodic maintenance/i.test(lowerS);
     const isTOCLine = /\.{3,}/.test(cleanSentence) || /\.\s*\.\s*\.\s*\./.test(cleanSentence);
-    if (isHeaderOrIndicator || isGenericHeader || isTOCLine) return;
+    const isLikelyIndexEntry = /(page\s*)?\d{1,3}$/.test(lowerS) && cleanSentence.length < 170 && !/[;:]/.test(cleanSentence);
+    if (isHeaderOrIndicator || isGenericHeader || isTOCLine || isLikelyIndexEntry) return;
 
     let componentMatch = isolateComponent(cleanSentence);
     if (componentMatch !== "NA") {
