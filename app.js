@@ -60,6 +60,8 @@ const exportBtn = document.getElementById("export-btn");
 const dropZone = document.getElementById("drop-zone");
 const fileInput = document.getElementById("file-input");
 const browseBtn = document.getElementById("browse-btn");
+const pageRangeStartInput = document.getElementById("page-range-start");
+const pageRangeEndInput = document.getElementById("page-range-end");
 const progressOverlay = document.getElementById("progress-overlay");
 const progressFill = document.getElementById("progress-fill");
 const progressTitle = document.getElementById("progress-title");
@@ -2130,6 +2132,34 @@ function extractTXTText(file) {
   });
 }
 
+// Resolve the optional "From Page" / "To Page" inputs into a valid, clamped
+// [start, end] range for the given document. Blank/invalid inputs fall back
+// to parsing the entire document (start=1, end=totalPages).
+function resolvePageRange(totalPages) {
+  let start = parseInt(pageRangeStartInput && pageRangeStartInput.value, 10);
+  let end = parseInt(pageRangeEndInput && pageRangeEndInput.value, 10);
+  const hasStart = !isNaN(start) && start > 0;
+  const hasEnd = !isNaN(end) && end > 0;
+
+  if (!hasStart && !hasEnd) {
+    return { start: 1, end: totalPages, isPartial: false };
+  }
+
+  if (!hasStart) start = 1;
+  if (!hasEnd) end = totalPages;
+
+  // Clamp into valid document bounds, and swap if entered backwards
+  start = Math.max(1, Math.min(start, totalPages));
+  end = Math.max(1, Math.min(end, totalPages));
+  if (end < start) {
+    const tmp = start;
+    start = end;
+    end = tmp;
+  }
+
+  return { start, end, isPartial: (start !== 1 || end !== totalPages) };
+}
+
 // Scrape text content page-by-page using client PDF.js
 function extractPDFText(file) {
   return new Promise((resolve, reject) => {
@@ -2142,6 +2172,7 @@ function extractPDFText(file) {
       try {
         const pdf = await pdfjsLib.getDocument(typedarray).promise;
         const totalPages = pdf.numPages;
+        const { start: rangeStart, end: rangeEnd, isPartial: isPartialRange } = resolvePageRange(totalPages);
         loadedPages = [];
         let compiledText = "";
         let maintCount = 0;
@@ -2150,14 +2181,20 @@ function extractPDFText(file) {
         let llmPagesProcessed = 0;
         let prevPageWasIndex = false;
 
-        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        if (isPartialRange) {
+          appendChatSystemMessage(`Parsing only pages **${rangeStart}\u2013${rangeEnd}** of **${totalPages}** total pages, as requested.`);
+        }
+
+        for (let pageNum = rangeStart; pageNum <= rangeEnd; pageNum++) {
           if (abortExtraction) {
             appendChatSystemMessage("Extraction stopped by user request.");
             break;
           }
           
-          progressTitle.innerText = `Parsing Page ${pageNum} of ${totalPages}`;
-          const progressPercent = Math.round((pageNum / totalPages) * 100);
+          progressTitle.innerText = isPartialRange
+            ? `Parsing Page ${pageNum} of ${totalPages} (Range ${rangeStart}-${rangeEnd})`
+            : `Parsing Page ${pageNum} of ${totalPages}`;
+          const progressPercent = Math.round(((pageNum - rangeStart + 1) / (rangeEnd - rangeStart + 1)) * 100);
           progressFill.style.width = `${progressPercent}%`;
           
           if (engineMode === "ollama") {
@@ -2271,8 +2308,10 @@ function extractPDFText(file) {
           activeDocName.style.background = "hsla(190, 90%, 50%, 0.05)";
           safeCreateIcons();
           
-          const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmPagesProcessed} / ${totalPages} pages` : "heuristics";
-          appendChatSystemMessage(`Completed client-side PDF processing for **"${file.name}"** (${totalPages} pages) using **${labelModeText}**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
+          const pagesInRange = rangeEnd - rangeStart + 1;
+          const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmPagesProcessed} / ${pagesInRange} pages` : "heuristics";
+          const rangeLabel = isPartialRange ? `pages ${rangeStart}-${rangeEnd} of ${totalPages}` : `${totalPages} pages`;
+          appendChatSystemMessage(`Completed client-side PDF processing for **"${file.name}"** (${rangeLabel}) using **${labelModeText}**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
           
           // Warn if it seems to be a scanned document
           if (maintCount === 0 && sparesCount === 0 && troubleCount === 0 && compiledText.trim().length < 200) {

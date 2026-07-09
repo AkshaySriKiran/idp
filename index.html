@@ -70,6 +70,20 @@
             <p class="upload-subtext">Drag & drop your PDF or TXT manual here, or <span class="browse-link" id="browse-btn">browse files</span></p>
             <p class="upload-formats">Supported formats: PDF, TXT (Max size 50MB)</p>
           </div>
+
+          <!-- Optional PDF Page Range Selector -->
+          <div class="page-range-row" id="page-range-row" onclick="event.stopPropagation()">
+            <div class="page-range-field">
+              <label for="page-range-start">From Page</label>
+              <input type="number" id="page-range-start" min="1" placeholder="1" class="settings-input">
+            </div>
+            <span class="page-range-sep">&ndash;</span>
+            <div class="page-range-field">
+              <label for="page-range-end">To Page</label>
+              <input type="number" id="page-range-end" min="1" placeholder="Last" class="settings-input">
+            </div>
+            <p class="page-range-hint">PDF only. Leave blank to parse all pages (e.g. enter 500 &ndash; 600 to only parse those pages of a 1000-page manual).</p>
+          </div>
           
           <!-- Parsing Progress Overlay (Hidden by default) -->
           <div class="progress-overlay" id="progress-overlay">
