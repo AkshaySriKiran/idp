@@ -27,6 +27,11 @@ let currentTabFilter = "all";
 let currentSearchQuery = "";
 let highlightRecordIds = [];
 
+// Globals to store actively filtered data for Excel export
+let filteredMaintenance = [];
+let filteredSpareParts = [];
+let filteredTroubleshooting = [];
+
 // Safe Lucide icon rendering wrapper
 function safeCreateIcons() {
   if (typeof lucide !== 'undefined' && lucide.createIcons) {
@@ -104,6 +109,31 @@ let ollamaModel = "";
 let isExtracting = false;
 let abortExtraction = false;
 
+// Persisted Ollama connection settings — remembers the last endpoint/model used
+// across page reloads instead of always resetting to the hardcoded default above.
+const OLLAMA_SETTINGS_KEY = "omniparse_ollama_settings";
+let savedOllamaSettings = null;
+try {
+  const rawOllamaSettings = localStorage.getItem(OLLAMA_SETTINGS_KEY);
+  if (rawOllamaSettings) {
+    savedOllamaSettings = JSON.parse(rawOllamaSettings);
+    if (savedOllamaSettings && savedOllamaSettings.url) {
+      ollamaUrl = savedOllamaSettings.url;
+    }
+    if (savedOllamaSettings && savedOllamaSettings.model) {
+      ollamaModel = savedOllamaSettings.model;
+    }
+  }
+} catch (e) {
+  console.error("Failed to load saved Ollama settings", e);
+}
+
+function saveOllamaSettings() {
+  try {
+    localStorage.setItem(OLLAMA_SETTINGS_KEY, JSON.stringify({ url: ollamaUrl, model: ollamaModel }));
+  } catch (e) {}
+}
+
 // Equipment Manifest state
 let equipmentManifest = null;
 let activeEquipmentCategory = "Default";
@@ -152,6 +182,11 @@ const cancelExtractBtn = document.getElementById("cancel-extract-btn");
 const equipmentCategorySelect = document.getElementById("equipment-category");
 const parseStrategySelect = document.getElementById("parse-strategy");
 const parseStrategyGroup = document.getElementById("parse-strategy-group");
+
+// Reflect any restored/persisted endpoint into the input immediately
+if (ollamaUrlInput && ollamaUrl) {
+  ollamaUrlInput.value = ollamaUrl;
+}
 
 // Settings event listeners
 if (parseStrategySelect) {
@@ -211,12 +246,14 @@ if (engineModeSelect) {
 if (ollamaUrlInput) {
   ollamaUrlInput.addEventListener("change", (e) => {
     ollamaUrl = e.target.value.trim();
+    saveOllamaSettings();
   });
 }
 
 if (ollamaModelSelect) {
   ollamaModelSelect.addEventListener("change", (e) => {
     ollamaModel = e.target.value;
+    saveOllamaSettings();
   });
 }
 
@@ -277,20 +314,31 @@ async function syncOllama() {
     if (data.models && data.models.length > 0) {
       ollamaModelSelect.innerHTML = "";
       let selectedIndex = 0;
+      let bestPreferenceFound = null;
+      // Remembering the model previously used on THIS endpoint takes priority over the generic heuristics below
+      const rememberedModel = (savedOllamaSettings && savedOllamaSettings.url === ollamaUrl) ? savedOllamaSettings.model : null;
       data.models.forEach((model, idx) => {
         const option = document.createElement("option");
         option.value = model.name;
         option.innerText = model.name;
         ollamaModelSelect.appendChild(option);
         
-        // Auto-select llama3 variants if found to avoid system lag on heavier models
-        if (model.name.toLowerCase().includes("llama3")) {
+        const lowerName = model.name.toLowerCase();
+        if (rememberedModel && model.name === rememberedModel) {
           selectedIndex = idx;
+          bestPreferenceFound = "remembered";
+        } else if (lowerName.includes("manual") && bestPreferenceFound !== "remembered" && bestPreferenceFound !== "manual") {
+          selectedIndex = idx;
+          bestPreferenceFound = "manual";
+        } else if (lowerName.includes("llama3") && !bestPreferenceFound) {
+          selectedIndex = idx;
+          bestPreferenceFound = "llama3";
         }
       });
       ollamaModelSelect.selectedIndex = selectedIndex;
       ollamaModel = data.models[selectedIndex].name;
       updateOllamaStatus("online", "Connected", "success");
+      saveOllamaSettings();
     } else {
       throw new Error("No models installed. Pull a model first, e.g. 'ollama run llama3'");
     }
@@ -299,7 +347,7 @@ async function syncOllama() {
     console.error("Ollama connection failed", err);
     updateOllamaStatus(
       "error", 
-      `Connection failed: ${err.message}. Ensure Ollama is running and CORS is enabled.`, 
+      `Connection failed: ${err.message}. Ensure Ollama (or NoLlama) is running at ${ollamaUrl} and CORS is enabled.`, 
       "error"
     );
     ollamaModelSelect.innerHTML = `<option value="llama3">llama3 (Fallback)</option>`;
@@ -395,7 +443,7 @@ function isTextGroundedInSource(candidateText, sourceText) {
   if (tokens.length === 0) return false;
 
   const matchedTokens = tokens.filter(t => source.includes(t));
-  const tokenThreshold = Math.max(2, Math.ceil(tokens.length * 0.45));
+  const tokenThreshold = Math.max(1, Math.ceil(tokens.length * 0.45));
   const tokenOk = matchedTokens.length >= tokenThreshold;
 
   // Additional phrase check helps reject fluent hallucinations built from sparse index labels.
@@ -1237,7 +1285,8 @@ function renderMarkdown(text) {
 
 /* -------------------------------------------------------------
  * 1. UI Rendering Engine
- * ------------------------------------------------------------- */function updateDashboardMetrics() {
+ * ------------------------------------------------------------- */
+function updateDashboardMetrics() {
   const rules = maintenanceRegistry.length;
   const parts = sparePartsRegistry.length;
   
@@ -1274,7 +1323,7 @@ function renderGrid() {
   if (activeRegistryTab === "maintenance") {
     maintenanceTableBody.innerHTML = "";
     
-    filtered = maintenanceRegistry.filter(row => {
+    filteredMaintenance = maintenanceRegistry.filter(row => {
       // 1. Tab Filter
       if (currentTabFilter !== "all") {
         const routine = String(row.maintenance_routine || "").toLowerCase();
@@ -1298,6 +1347,7 @@ function renderGrid() {
       
       return true;
     });
+    filtered = filteredMaintenance;
 
     if (filtered.length === 0) {
       tableEmpty.style.display = "flex";
@@ -1353,7 +1403,7 @@ function renderGrid() {
     // Spare Parts Tab
     sparePartsTableBody.innerHTML = "";
     
-    filtered = sparePartsRegistry.filter(row => {
+    filteredSpareParts = sparePartsRegistry.filter(row => {
       // 1. Search Text Query
       if (currentSearchQuery) {
         const q = currentSearchQuery.toLowerCase();
@@ -1368,6 +1418,7 @@ function renderGrid() {
       
       return true;
     });
+    filtered = filteredSpareParts;
 
     if (filtered.length === 0) {
       tableEmpty.style.display = "flex";
@@ -1404,7 +1455,7 @@ function renderGrid() {
     // Troubleshooting Tab
     troubleshootingTableBody.innerHTML = "";
     
-    filtered = troubleshootingRegistry.filter(row => {
+    filteredTroubleshooting = troubleshootingRegistry.filter(row => {
       // 1. Search Text Query
       if (currentSearchQuery) {
         const q = currentSearchQuery.toLowerCase();
@@ -1419,6 +1470,7 @@ function renderGrid() {
       
       return true;
     });
+    filtered = filteredTroubleshooting;
 
     if (filtered.length === 0) {
       tableEmpty.style.display = "flex";
@@ -1442,6 +1494,29 @@ function renderGrid() {
         `;
         troubleshootingTableBody.appendChild(tr);
       });
+    }
+  }
+
+  // Handle visibility of filter tab container and individual buttons
+  const chatFilterChip = document.getElementById("chat-filter-chip");
+  if (highlightRecordIds.length === 0 && chatFilterChip) {
+    chatFilterChip.remove();
+  }
+
+  if (filterTabs) {
+    const intervalButtons = filterTabs.querySelectorAll("[data-filter]");
+    const activeChatFilterChip = document.getElementById("chat-filter-chip");
+
+    if (activeRegistryTab === "maintenance") {
+      filterTabs.style.display = "flex";
+      intervalButtons.forEach(btn => btn.style.display = "block");
+    } else {
+      intervalButtons.forEach(btn => btn.style.display = "none");
+      if (highlightRecordIds.length > 0 || activeChatFilterChip) {
+        filterTabs.style.display = "flex";
+      } else {
+        filterTabs.style.display = "none";
+      }
     }
   }
   
@@ -1520,8 +1595,8 @@ function attachTableListeners() {
       input.addEventListener("keydown", function(e) {
         if (e.key === "Enter") saveEdit();
         if (e.key === "Escape") {
-          this.classList.remove("editing");
-          renderGrid();
+          input.value = originalValue;
+          saveEdit();
         }
       });
       
@@ -1552,7 +1627,15 @@ addRowBtn.addEventListener("click", () => {
   let newId;
   if (activeRegistryTab === "maintenance") {
     newId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
-    const newRow = {
+    const newRow = activeEquipmentCategory === "Logbook" ? {
+      id: newId,
+      date: "NA",
+      maintenance_work_description: "Maintenance Work Description",
+      parts_renewed: "NA",
+      attended_by: "NA",
+      remarks: "NA",
+      page: "NA"
+    } : {
       id: newId,
       equipment_title: "Equipment Title",
       subsystem_component: "Sub-system / Component",
@@ -1633,7 +1716,7 @@ filterTabs.addEventListener("click", (e) => {
 
 exportBtn.addEventListener("click", () => {
   if (activeRegistryTab === "maintenance") {
-    if (maintenanceRegistry.length === 0) {
+    if (filteredMaintenance.length === 0) {
       alert("No maintenance records to export.");
       return;
     }
@@ -1643,7 +1726,7 @@ exportBtn.addEventListener("click", () => {
     let colsMaint;
     
     if (activeEquipmentCategory === "Logbook") {
-      exportMaint = maintenanceRegistry.map(r => ({
+      exportMaint = filteredMaintenance.map(r => ({
         "Record ID": `#${r.id}`,
         "Date": r.date || "NA",
         "Maintenance Work Description": r.maintenance_work_description || "NA",
@@ -1662,7 +1745,7 @@ exportBtn.addEventListener("click", () => {
         { wch: 15 }  // Page Reference
       ];
     } else {
-      exportMaint = maintenanceRegistry.map(r => ({
+      exportMaint = filteredMaintenance.map(r => ({
         "Record ID": `#${r.id}`,
         "Equipment Title": r.equipment_title || "NA",
         "Sub-system / Component": r.subsystem_component || "NA",
@@ -1689,13 +1772,13 @@ exportBtn.addEventListener("click", () => {
     const filename = `OmniParse_Maintenance_Tasks_${dateStr}.xlsx`;
     XLSX.writeFile(wb, filename);
   } else if (activeRegistryTab === "spare_parts") {
-    if (sparePartsRegistry.length === 0) {
+    if (filteredSpareParts.length === 0) {
       alert("No spare parts records to export.");
       return;
     }
 
     const wb = XLSX.utils.book_new();
-    const exportParts = sparePartsRegistry.map(r => ({
+    const exportParts = filteredSpareParts.map(r => ({
       "Record ID": `#${r.id}`,
       "Equipment Title": r.equipment_title || "NA",
       "Sub-system / Component Location": r.subsystem_location || "NA",
@@ -1736,13 +1819,13 @@ exportBtn.addEventListener("click", () => {
     const filename = `OmniParse_Spare_Parts_${dateStr}.xlsx`;
     XLSX.writeFile(wb, filename);
   } else if (activeRegistryTab === "troubleshooting") {
-    if (troubleshootingRegistry.length === 0) {
+    if (filteredTroubleshooting.length === 0) {
       alert("No troubleshooting records to export.");
       return;
     }
 
     const wb = XLSX.utils.book_new();
-    const exportTrouble = troubleshootingRegistry.map(r => ({
+    const exportTrouble = filteredTroubleshooting.map(r => ({
       "Record ID": `#${r.id}`,
       "Equipment Title": r.equipment_title || "NA",
       "Sub-system / Component": r.subsystem_component || "NA",
@@ -1797,7 +1880,14 @@ dropZone.addEventListener('drop', (e) => {
   }
 });
 
-browseBtn.addEventListener('click', () => {
+browseBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  fileInput.click();
+});
+
+// Clicking anywhere on the drop zone (not just the "browse files" link) opens the file picker
+dropZone.addEventListener('click', (e) => {
+  if (isExtracting || e.target.closest('#progress-overlay')) return;
   fileInput.click();
 });
 
@@ -1809,13 +1899,40 @@ fileInput.addEventListener('change', (e) => {
 
 
 
+const MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024; // 50MB, matches UI copy
+
 async function handleFileUpload(file) {
+  if (isExtracting) {
+    alert("An extraction is already in progress. Please wait for it to finish or cancel it first.");
+    return;
+  }
+
   const extension = file.name.split('.').pop().toLowerCase();
   
   if (extension !== 'pdf' && extension !== 'txt' && extension !== 'jpg' && extension !== 'jpeg' && extension !== 'png') {
     alert("Unsupported file format! Please upload a PDF, TXT, or Image (JPG/PNG).");
     return;
   }
+
+  if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+    alert(`File is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Maximum supported size is 50MB.`);
+    return;
+  }
+
+  // Starting a new document replaces the previous registries rather than merging into them
+  if (maintenanceRegistry.length > 0 || sparePartsRegistry.length > 0 || troubleshootingRegistry.length > 0) {
+    const proceed = confirm(`Loading "${file.name}" will clear the current registry data (${maintenanceRegistry.length} maintenance, ${sparePartsRegistry.length} spare parts, ${troubleshootingRegistry.length} troubleshooting records). Continue?`);
+    if (!proceed) return;
+  }
+  maintenanceRegistry = [];
+  sparePartsRegistry = [];
+  troubleshootingRegistry = [];
+  highlightRecordIds = [];
+  renderGrid();
+
+  // Claim the extraction lock immediately so a second file dropped during the
+  // async FileReader setup below can't sneak in before the sub-parsers set it themselves
+  isExtracting = true;
 
   // Active parser overlay animations
   progressOverlay.classList.add("active");
@@ -1835,6 +1952,7 @@ async function handleFileUpload(file) {
     console.error(error);
     alert(`Error parsing document: ${error.message}`);
     progressOverlay.classList.remove("active");
+    isExtracting = false;
   }
 }
 
@@ -1971,10 +2089,11 @@ function extractTXTText(file) {
         
         setTimeout(() => {
           progressOverlay.classList.remove("active");
-          activeDocName.querySelector("span").innerText = file.name;
+          activeDocName.innerHTML = `<i data-lucide="file-text"></i><span>${escapeHTML(file.name)}</span>`;
           activeDocName.style.borderColor = "var(--accent-cyan-glow)";
           activeDocName.style.color = "var(--accent-cyan)";
           activeDocName.style.background = "hsla(190, 90%, 50%, 0.05)";
+          safeCreateIcons();
           
           const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmChunksProcessed} / ${totalChunksCount} chunks` : "heuristics";
           appendChatSystemMessage(`Successfully parsed text manual **"${file.name}"** using **${labelModeText}**! Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
@@ -2146,10 +2265,11 @@ function extractPDFText(file) {
         
         setTimeout(() => {
           progressOverlay.classList.remove("active");
-          activeDocName.querySelector("span").innerText = file.name;
+          activeDocName.innerHTML = `<i data-lucide="file-text"></i><span>${escapeHTML(file.name)}</span>`;
           activeDocName.style.borderColor = "var(--accent-cyan-glow)";
           activeDocName.style.color = "var(--accent-cyan)";
           activeDocName.style.background = "hsla(190, 90%, 50%, 0.05)";
+          safeCreateIcons();
           
           const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmPagesProcessed} / ${totalPages} pages` : "heuristics";
           appendChatSystemMessage(`Completed client-side PDF processing for **"${file.name}"** (${totalPages} pages) using **${labelModeText}**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
@@ -2175,12 +2295,7 @@ function extractPDFText(file) {
 }
 
 async function extractImageText(file) {
-  if (isExtracting) {
-    alert("An extraction is already in progress.");
-    return;
-  }
-  isExtracting = true;
-  
+  // isExtracting lock is already claimed by handleFileUpload() before this runs
   return new Promise((resolve, reject) => {
     const fileReader = new FileReader();
     
@@ -2231,10 +2346,11 @@ async function extractImageText(file) {
         
         setTimeout(() => {
           progressOverlay.classList.remove("active");
-          activeDocName.querySelector("span").innerText = file.name;
+          activeDocName.innerHTML = `<i data-lucide="file-text"></i><span>${escapeHTML(file.name)}</span>`;
           activeDocName.style.borderColor = "var(--accent-cyan-glow)";
           activeDocName.style.color = "var(--accent-cyan)";
           activeDocName.style.background = "hsla(190, 90%, 50%, 0.05)";
+          safeCreateIcons();
           
           appendChatSystemMessage(`Completed client-side image processing for **"${file.name}"** using **local LLM (${ollamaModel})**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
           
@@ -2267,39 +2383,109 @@ function runRuleExtractorHeuristics(text, docName, pageNum = 1) {
     const spareParts = parseSparePartsStructurally(text, docName, pageNum);
     return {
       maintenance: [],
-      spare_parts: spareParts
+      spare_parts: spareParts,
+      troubleshooting: []
     };
   }
 
+  const partKeywords = ["bearing", "filter", "friction plate", "pad", "disc", "valve", "coupling", "seal", "clamp", "stopper", "nut", "bolt", "accumulator", "gasket", "spring", "hose", "pipe", "pump", "block", "roller", "screw", "pin", "wire", "rope", "plug", "motor", "gear", "reducer", "coupler", "fitting", "caliper", "drum", "shaft", "skid", "plates", "groove", "gearbox", "sump", "oil", "grease", "lubricant", "engine", "compressor", "air cleaner", "battery", "radiator", "tank", "cable", "winch", "tophead", "coolant", "fuel", "hydraulic"];
+
+  // 1. Logbook Heuristics Mode
+  if (activeEquipmentCategory === "Logbook") {
+    const output = {
+      maintenance: [],
+      spare_parts: [],
+      troubleshooting: []
+    };
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const dateRegex = /\b(?:\d{1,2}[-/.\s](?:[A-Za-z]{3,10}|\d{1,2})[-/.\s]\d{2,4}|\d{4}[-/.\s]\d{1,2}[-/.\s]\d{1,2})\b/i;
+
+    lines.forEach(line => {
+      if (line.length < 10) return;
+      if (/date|work description|parts renewed|attended|remarks/i.test(line) && line.split(/\s+/).length < 6) return;
+      
+      const dateMatch = line.match(dateRegex);
+      const dateStr = dateMatch ? dateMatch[0] : "NA";
+      
+      let workDesc = line;
+      if (dateMatch) {
+        workDesc = line.replace(dateRegex, "").trim();
+      }
+      workDesc = workDesc.replace(/^[\s|:\-]+/, "").trim();
+      
+      const partsFound = [];
+      partKeywords.forEach(pk => {
+        if (new RegExp(`\\b${pk}s?\\b`, 'i').test(line)) {
+          partsFound.push(pk.charAt(0).toUpperCase() + pk.slice(1));
+        }
+      });
+      const partsRenewed = partsFound.length > 0 ? partsFound.join(", ") : "NA";
+      
+      let attendedBy = "NA";
+      const byMatch = line.match(/\bby\s+([A-Za-z\s\.\-]{2,15})\b/i);
+      if (byMatch) {
+        attendedBy = byMatch[1].trim();
+      } else {
+        const endInitialsMatch = line.match(/\b([A-Z\.\-]{2,5})\b\s*$/);
+        if (endInitialsMatch) {
+          attendedBy = endInitialsMatch[1].trim();
+        }
+      }
+      
+      output.maintenance.push({
+        id: 0,
+        date: dateStr,
+        maintenance_work_description: workDesc,
+        parts_renewed: partsRenewed,
+        attended_by: attendedBy,
+        remarks: "NA",
+        page: pageNum
+      });
+    });
+    
+    output.maintenance = output.maintenance.filter(isCleanMaintenanceRow);
+    return normalizeExtraction(output);
+  }
+
+  // 2. Standard Equipment Heuristics Mode
   const output = {
     maintenance: [],
-    spare_parts: []
+    spare_parts: [],
+    troubleshooting: []
   };
 
-  // Structured Maintenance Table extraction
   const lowerText = text.toLowerCase();
-  if (lowerText.includes("symptom") && lowerText.includes("cause") && lowerText.includes("elimination")) {
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  
+  // Structured Troubleshooting Table extraction
+  if (lowerText.includes("symptom") && lowerText.includes("cause") && (lowerText.includes("elimination") || lowerText.includes("remedy") || lowerText.includes("solution"))) {
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
     let inTable = false;
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].replace(/\s+/g, " ");
-        if (line.toLowerCase().includes("symptom") && line.toLowerCase().includes("cause")) {
-            inTable = true;
-            continue;
+      const line = lines[i];
+      const lowerLine = line.toLowerCase();
+      if (lowerLine.includes("symptom") && (lowerLine.includes("cause") || lowerLine.includes("reason"))) {
+        inTable = true;
+        continue;
+      }
+      if (inTable && line.length > 15) {
+        let parts = line.split(/\t|\||\s{3,}/).map(p => p.trim()).filter(Boolean);
+        if (parts.length >= 2) {
+          let problem = parts[0];
+          let solution = parts.slice(1).join(" - ");
+          let comp = isolateComponent(line);
+          if (comp === "NA") {
+            comp = isolateComponent(problem) || "System Component";
+          }
+          output.troubleshooting.push({
+            id: 0,
+            equipment_title: docName ? docName.replace(/\.[^/.]+$/, "") : "NA",
+            subsystem_component: comp,
+            problem: problem,
+            root_cause_solution: solution,
+            page: pageNum
+          });
         }
-        if (inTable && line.length > 10) {
-            let comp = isolateComponent(line);
-            if (comp !== "NA" && line.toLowerCase().includes("replace")) {
-                output.maintenance.push({
-                    id: 0,
-                    equipment_title: docName ? docName.replace(/\.[^/.]+$/, "") : "NA",
-                    subsystem_component: comp,
-                    maintenance_routine: "Periodic",
-                    checks_instructions: line,
-                    page: pageNum
-                });
-            }
-        }
+      }
     }
   }
   
@@ -2308,7 +2494,6 @@ function runRuleExtractorHeuristics(text, docName, pageNum = 1) {
   
   // List of keywords indicating maintenance checks
   const keywords = ["replace", "lubricate", "grease", "inspect", "check", "clean", "torque", "coaxiality", "tighten", "weld", "drain", "replenish", "flush", "tighten"];
-  const partKeywords = ["bearing", "filter", "friction plate", "pad", "disc", "valve", "coupling", "seal", "clamp", "stopper", "nut", "bolt", "accumulator", "gasket", "spring", "hose", "pipe", "pump", "block", "roller", "screw", "pin", "wire", "rope", "plug", "motor", "gear", "reducer", "coupler", "fitting", "caliper", "drum", "shaft", "skid", "plates", "groove", "gearbox", "sump", "oil", "grease", "lubricant", "engine", "compressor", "air cleaner", "battery", "radiator", "tank", "cable", "winch", "tophead", "coolant", "fuel", "hydraulic"];
   
   let lastSeenComponent = "System Component"; // Contextual tracking
 
@@ -2398,6 +2583,14 @@ function runRuleExtractorHeuristics(text, docName, pageNum = 1) {
   // Filter out incomplete/placeholder rows with no valid data
   output.maintenance = output.maintenance.filter(isCleanMaintenanceRow);
   output.spare_parts = output.spare_parts.filter(isCleanSparePartsRow);
+  if (output.troubleshooting) {
+    output.troubleshooting = output.troubleshooting.filter(r => 
+      r.problem !== "NA" && 
+      r.root_cause_solution !== "NA" && 
+      r.problem.length > 5 && 
+      r.root_cause_solution.length > 5
+    );
+  }
   return normalizeExtraction(output);
 }
 
