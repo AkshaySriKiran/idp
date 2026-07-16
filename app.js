@@ -104,7 +104,7 @@ if (registryModeTabs) {
 }
 
 // AI Engine configuration state
-let engineMode = "heuristics"; // "heuristics" or "ollama"
+let engineMode = "ollama"; // "heuristics" or "ollama" — overridden on load by initApp() from the UI select, but kept in sync here defensively
 let parseStrategy = "native"; // "native" or "ocr"
 let ollamaUrl = "http://localhost:11434";
 let ollamaModel = "";
@@ -133,6 +133,38 @@ try {
 function saveOllamaSettings() {
   try {
     localStorage.setItem(OLLAMA_SETTINGS_KEY, JSON.stringify({ url: ollamaUrl, model: ollamaModel }));
+  } catch (e) {}
+}
+
+// Google Gemini API (cloud) engine configuration state.
+// SECURITY NOTE: this file is a client-side script served directly to the browser — anything
+// stored here (including the default API key below) is visible to anyone who views the page
+// source, opens dev tools, or inspects the network tab. This hardcoded default was added at the
+// user's explicit request for a local/private tool only. Rotate this key immediately if this
+// file is ever shared, deployed publicly, or committed to a shared/public repository.
+let geminiApiKey = "AQ.Ab8RN6Je-zL-tu6YNX8kBbgzimKIaCxX6vfcUtXLMeBhnnobAA";
+let geminiModel = "gemini-flash-latest"; // Google auto-updates this alias to their current flash-tier stable model
+
+const GEMINI_SETTINGS_KEY = "omniparse_gemini_settings";
+let savedGeminiSettings = null;
+try {
+  const rawGeminiSettings = localStorage.getItem(GEMINI_SETTINGS_KEY);
+  if (rawGeminiSettings) {
+    savedGeminiSettings = JSON.parse(rawGeminiSettings);
+    if (savedGeminiSettings && savedGeminiSettings.apiKey) {
+      geminiApiKey = savedGeminiSettings.apiKey;
+    }
+    if (savedGeminiSettings && savedGeminiSettings.model) {
+      geminiModel = savedGeminiSettings.model;
+    }
+  }
+} catch (e) {
+  console.error("Failed to load saved Gemini settings", e);
+}
+
+function saveGeminiSettings() {
+  try {
+    localStorage.setItem(GEMINI_SETTINGS_KEY, JSON.stringify({ apiKey: geminiApiKey, model: geminiModel }));
   } catch (e) {}
 }
 
@@ -184,10 +216,21 @@ const cancelExtractBtn = document.getElementById("cancel-extract-btn");
 const equipmentCategorySelect = document.getElementById("equipment-category");
 const parseStrategySelect = document.getElementById("parse-strategy");
 const parseStrategyGroup = document.getElementById("parse-strategy-group");
+const geminiSettingsGroup = document.getElementById("gemini-settings-group");
+const geminiApiKeyInput = document.getElementById("gemini-api-key");
+const geminiModelInput = document.getElementById("gemini-model-select");
+const btnTestGemini = document.getElementById("btn-test-gemini");
+const geminiInfoText = document.getElementById("gemini-info-text");
 
 // Reflect any restored/persisted endpoint into the input immediately
 if (ollamaUrlInput && ollamaUrl) {
   ollamaUrlInput.value = ollamaUrl;
+}
+if (geminiApiKeyInput && geminiApiKey) {
+  geminiApiKeyInput.value = geminiApiKey;
+}
+if (geminiModelInput && geminiModel) {
+  geminiModelInput.value = geminiModel;
 }
 
 // Settings event listeners
@@ -234,11 +277,19 @@ if (engineModeSelect) {
     engineMode = e.target.value;
     if (engineMode === "ollama") {
       ollamaSettingsGroup.style.display = "block";
+      if (geminiSettingsGroup) geminiSettingsGroup.style.display = "none";
       if (parseStrategyGroup) parseStrategyGroup.style.display = "block";
       updateOllamaStatus("offline", "Ollama Mode Selected");
       syncOllama(); // Try to sync immediately
+    } else if (engineMode === "gemini") {
+      ollamaSettingsGroup.style.display = "none";
+      if (geminiSettingsGroup) geminiSettingsGroup.style.display = "block";
+      if (parseStrategyGroup) parseStrategyGroup.style.display = "block";
+      updateOllamaStatus("offline", "Gemini API Selected");
+      syncGemini(); // Try to verify the key immediately
     } else {
       ollamaSettingsGroup.style.display = "none";
+      if (geminiSettingsGroup) geminiSettingsGroup.style.display = "none";
       if (parseStrategyGroup) parseStrategyGroup.style.display = "none";
       updateOllamaStatus("offline", "Local Heuristics");
     }
@@ -265,6 +316,26 @@ if (btnTestOllama) {
   });
 }
 
+if (geminiApiKeyInput) {
+  geminiApiKeyInput.addEventListener("change", (e) => {
+    geminiApiKey = e.target.value.trim();
+    saveGeminiSettings();
+  });
+}
+
+if (geminiModelInput) {
+  geminiModelInput.addEventListener("change", (e) => {
+    geminiModel = e.target.value.trim();
+    saveGeminiSettings();
+  });
+}
+
+if (btnTestGemini) {
+  btnTestGemini.addEventListener("click", () => {
+    syncGemini();
+  });
+}
+
 if (cancelExtractBtn) {
   cancelExtractBtn.addEventListener("click", () => {
     abortExtraction = true;
@@ -282,20 +353,25 @@ function updateOllamaStatus(status, text, infoClass = "") {
   if (engineMode === "heuristics") {
     label.innerText = "Local Heuristics";
     dot.className = "status-dot offline";
+  } else if (engineMode === "gemini") {
+    label.innerText = status === "online" ? "Gemini Active" : "Gemini Offline";
   } else {
     label.innerText = status === "online" ? `Ollama Active` : "Ollama Offline";
   }
   
-  if (ollamaInfoText) {
-    ollamaInfoText.className = "ollama-info " + infoClass;
+  // Ollama and Gemini each have their own info box in the settings panel (only one is visible
+  // at a time depending on engineMode), so route the status text to whichever is active.
+  const activeInfoEl = engineMode === "gemini" ? geminiInfoText : ollamaInfoText;
+  if (activeInfoEl) {
+    activeInfoEl.className = "ollama-info " + infoClass;
     if (status === "online") {
-      ollamaInfoText.innerText = `Connected successfully! Active model: ${ollamaModel}`;
+      activeInfoEl.innerText = engineMode === "gemini" ? `Connected successfully! Active model: ${geminiModel}` : `Connected successfully! Active model: ${ollamaModel}`;
     } else if (status === "syncing") {
-      ollamaInfoText.innerText = "Syncing local models with Ollama...";
+      activeInfoEl.innerText = engineMode === "gemini" ? "Verifying Gemini API key..." : "Syncing local models with Ollama...";
     } else if (status === "error") {
-      ollamaInfoText.innerText = text;
+      activeInfoEl.innerText = text;
     } else {
-      ollamaInfoText.innerText = "Ollama not verified. Click 'Sync' to connect.";
+      activeInfoEl.innerText = engineMode === "gemini" ? "Gemini not verified. Click 'Verify Key' to test the connection." : "Ollama not verified. Click 'Sync' to connect.";
     }
   }
 }
@@ -354,6 +430,76 @@ async function syncOllama() {
     );
     ollamaModelSelect.innerHTML = `<option value="llama3">llama3 (Fallback)</option>`;
     ollamaModel = "llama3";
+  }
+}
+
+// Verify the Gemini API key/model by hitting the lightweight models.list endpoint
+async function syncGemini() {
+  const syncIcon = btnTestGemini ? btnTestGemini.querySelector("i") : null;
+  if (syncIcon) syncIcon.classList.add("spin-loading");
+  updateOllamaStatus("syncing", "Verifying...");
+
+  try {
+    if (!geminiApiKey) {
+      throw new Error("No API key entered.");
+    }
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}`);
+    if (syncIcon) syncIcon.classList.remove("spin-loading");
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error((errBody.error && errBody.error.message) || `HTTP error ${res.status}`);
+    }
+    const data = await res.json();
+
+    // Google periodically retires model versions (e.g. old "-flash"/"-pro" names stop being
+    // available to new API keys). Only keep models this key can actually call for extraction,
+    // and populate the dropdown from that live list instead of trusting a hardcoded name.
+    const usableModels = (data.models || []).filter(m =>
+      Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent")
+    );
+
+    if (usableModels.length === 0) {
+      throw new Error("Key is valid, but no generateContent-capable models were returned by the API.");
+    }
+
+    if (geminiModelInput) {
+      geminiModelInput.innerHTML = "";
+      let selectedIndex = 0;
+      let bestPreferenceFound = null;
+      // Remembering the model previously used with this same key takes priority over the generic heuristics below
+      const rememberedModel = (savedGeminiSettings && savedGeminiSettings.apiKey === geminiApiKey) ? savedGeminiSettings.model : null;
+
+      usableModels.forEach((m, idx) => {
+        const shortName = m.name.replace(/^models\//, "");
+        const option = document.createElement("option");
+        option.value = shortName;
+        option.innerText = m.displayName ? `${shortName} (${m.displayName})` : shortName;
+        geminiModelInput.appendChild(option);
+
+        const lowerName = shortName.toLowerCase();
+        if (rememberedModel && shortName === rememberedModel) {
+          selectedIndex = idx;
+          bestPreferenceFound = "remembered";
+        } else if (lowerName.includes("flash") && !lowerName.includes("lite") && bestPreferenceFound !== "remembered" && bestPreferenceFound !== "flash") {
+          selectedIndex = idx;
+          bestPreferenceFound = "flash";
+        }
+      });
+      geminiModelInput.selectedIndex = selectedIndex;
+      geminiModel = usableModels[selectedIndex].name.replace(/^models\//, "");
+    }
+
+    updateOllamaStatus("online", "Connected", "success");
+    saveGeminiSettings();
+  } catch (err) {
+    if (syncIcon) syncIcon.classList.remove("spin-loading");
+    console.error("Gemini connection failed", err);
+    updateOllamaStatus(
+      "error",
+      `Connection failed: ${err.message}. Check your API key and network connection.`,
+      "error"
+    );
   }
 }
 
@@ -808,6 +954,18 @@ function parseSparePartsStructurally(text, docName, pageNum = 1) {
         frequency = "Replace during overhaul / Medium";
       }
     }
+
+    // Opportunistic detection of OEM/governing standard and recommended stock levels
+    // from the row's own text (segment + leftover remark tokens). Only ever set when
+    // actually present — never guessed — so this can only replace NA with real data.
+    const rowRemainderText = `${segment} ${remark}`;
+    let oemStandardBody = "NA";
+    const standardMatch = rowRemainderText.match(/\b(ISO|DIN|ANSI|API|ASME|JIS|BS|SAE|NEMA|IEC)[\-\s]?\d{0,6}\b/);
+    if (standardMatch) oemStandardBody = standardMatch[0];
+
+    let recommendedStockQty = "NA";
+    const stockMatch = rowRemainderText.toLowerCase().match(/\b(?:recommended stock|stock level)\D{0,20}?(\d{1,4})\b/);
+    if (stockMatch) recommendedStockQty = stockMatch[1];
     
     results.push({
       id: 0,
@@ -817,10 +975,10 @@ function parseSparePartsStructurally(text, docName, pageNum = 1) {
       part_name: partName,
       part_number_code: code,
       drawing_model_no: (drawingModelNo !== "NA" && mfrCode !== "NA") ? (drawingModelNo + " / " + mfrCode) : (drawingModelNo !== "NA" ? drawingModelNo : (mfrCode !== "NA" ? mfrCode : "NA")),
-      oem_standard_body: "NA",
+      oem_standard_body: oemStandardBody,
       part_categorization: categorization,
       quantity: qty !== "NA" ? qty : "1",
-      recommended_stock_qty: "NA",
+      recommended_stock_qty: recommendedStockQty,
       warranty_period: warranty,
       frequency_of_use: frequency,
       page: pageNum
@@ -973,17 +1131,10 @@ Output ONLY the transcribed text. Absolutely NO conversational text or descripti
 }
 
 // Query local Ollama API to extract structured parts & maintenance instructions
-async function runOllamaExtractor(text, docName, pageNum, base64Image = null) {
-  if (isRecommendedSparePartsPage(text) && !base64Image) {
-    const spareParts = parseSparePartsStructurally(text, docName, pageNum);
-    return normalizeExtraction({
-      maintenance: [],
-      spare_parts: spareParts
-    });
-  }
-
-  
-
+// Builds the shared extraction instruction prompt used by every LLM backend (Ollama, Gemini, ...).
+// Keeping this in one place ensures the carefully-tuned field-extraction rules (and any future
+// fixes to them) automatically apply to every engine instead of drifting out of sync.
+function buildExtractionPrompt(text, docName) {
   const cleanDocName = docName ? docName.replace(/\.[^/.]+$/, "") : "NA";
   let systemPrompt = `You are an expert technical parser of industrial engineering manuals.
 Your task is to analyze the text page content below and extract:
@@ -1011,10 +1162,13 @@ Rules for "spare_parts":
 - For "part_name", extract the descriptive name of the component or part.
 - For "part_categorization", use "Critical Spare", "Consumable", or "Standard Part".
 - For "quantity", extract the number of units.
-- For "part_number_code": The manufacturer's part number or code.
-- For "drawing_model_no": The engineering drawing or model designator number.
+- For "part_number_code": The manufacturer's part number or code. This is often an alphanumeric string (e.g. "H910-416", "30123290", "51300-348-F"), not necessarily a long numeric code. Scan the entire row/segment for it, including columns labeled "P/N", "Part No.", "Code", "Number", or similar.
+- For "drawing_model_no": The engineering drawing, reference/location designator (e.g. "U1", "TB2"), or model designator number, if present in the row.
+- For "oem_standard_body": The OEM name, manufacturer, or governing standard/body (e.g. "ANSI", "ISO", "DIN") referenced for the part, if present.
 - For "recommended_stock_qty", extract stock recommendation levels if present.
-- For "frequency_of_use", extract how frequently this part is used.
+- For "warranty_period", extract the warranty duration if mentioned (e.g. "12 months", "1 year").
+- For "frequency_of_use", extract how frequently this part is used or should be replaced/inspected.
+- IMPORTANT: Every field above must be actively searched for within the row's full text before defaulting to "NA". Only use "NA" when the information is truly absent from that row, not simply because it doesn't fit the example format below.
 
 Rules for "troubleshooting" tasks:
 - ONLY extract explicit troubleshooting matrices or tables. DO NOT extract Table of Contents headers, general descriptions, or normal paragraphs as problems.
@@ -1046,8 +1200,13 @@ Example Output Structure:
       "item_no": "1",
       "part_name": "EXAMPLE_PART_NAME_DO_NOT_COPY",
       "part_number_code": "EXAMPLE_CODE",
+      "drawing_model_no": "EXAMPLE_DRAWING_OR_REF_DO_NOT_COPY",
+      "oem_standard_body": "EXAMPLE_OEM_OR_STANDARD_DO_NOT_COPY",
       "part_categorization": "Consumable",
-      "quantity": "1"
+      "quantity": "1",
+      "recommended_stock_qty": "EXAMPLE_STOCK_QTY_DO_NOT_COPY",
+      "warranty_period": "EXAMPLE_WARRANTY_DO_NOT_COPY",
+      "frequency_of_use": "EXAMPLE_FREQUENCY_DO_NOT_COPY"
     }
   ],
   "troubleshooting": [
@@ -1102,50 +1261,16 @@ Text to parse:
 ${text}
 """`;
 
-  let cleanResponse = "";
+  return systemPrompt;
+}
+
+// Parses/normalizes the raw text response returned by any LLM backend into the app's
+// structured { maintenance, spare_parts, troubleshooting } shape. Shared by every engine so the
+// mapping, quality filters, and grounding guardrail only need to be maintained in one place.
+function processRawModelResponse(rawResponseText, docName, pageNum, base64Image, providerLabel) {
+  const cleanDocName = docName ? docName.replace(/\.[^/.]+$/, "") : "NA";
+  let cleanResponse = (rawResponseText || "").trim();
   try {
-    const fetchBody = {
-      model: ollamaModel,
-      prompt: systemPrompt,
-      stream: false,
-      format: "json",
-      options: {
-        temperature: 0.1
-      }
-    };
-    if (base64Image) {
-      fetchBody.images = [base64Image];
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 180000); // 180 seconds timeout
-
-    let response;
-    try {
-      response = await fetch(`${ollamaUrl}/api/generate`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(fetchBody),
-        signal: controller.signal
-      });
-    } catch (fetchErr) {
-      if (fetchErr.name === 'AbortError') {
-        throw new Error("Ollama took too long to respond (timeout). The image might be too complex or the model is overloaded.");
-      }
-      throw fetchErr;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    cleanResponse = data.response.trim();
-    
     // Robust extraction of JSON object if wrapped in markdown formatting by smaller models
     const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -1256,10 +1381,129 @@ ${text}
 
     return normalizeExtraction(output);
   } catch (parseErr) {
-    console.error("JSON Parsing failed for Ollama response:", cleanResponse);
+    console.error(`JSON Parsing failed for ${providerLabel || "LLM"} response:`, cleanResponse);
     throw new Error("JSON Parse Error: " + parseErr.message + " | Raw Output: " + cleanResponse.substring(0, 100) + "...");
   }
-  return { maintenance: [], spare_parts: [] };
+}
+
+// Query local Ollama API to extract structured parts & maintenance instructions
+async function runOllamaExtractor(text, docName, pageNum, base64Image = null) {
+  const systemPrompt = buildExtractionPrompt(text, docName);
+
+  const fetchBody = {
+    model: ollamaModel,
+    prompt: systemPrompt,
+    stream: false,
+    format: "json",
+    options: {
+      temperature: 0.1
+    }
+  };
+  if (base64Image) {
+    fetchBody.images = [base64Image];
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 180000); // 180 seconds timeout
+
+  let response;
+  try {
+    response = await fetch(`${ollamaUrl}/api/generate`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(fetchBody),
+      signal: controller.signal
+    });
+  } catch (fetchErr) {
+    if (fetchErr.name === 'AbortError') {
+      throw new Error("Ollama took too long to respond (timeout). The image might be too complex or the model is overloaded.");
+    }
+    throw fetchErr;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!response.ok) {
+    throw new Error(`Ollama API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return processRawModelResponse(data.response, docName, pageNum, base64Image, "Ollama");
+}
+
+// Query the Google Gemini API (cloud) to extract structured parts & maintenance instructions.
+// Uses the same prompt/parsing pipeline as Ollama, so extraction quality/fields stay identical
+// regardless of which engine is active — only the transport (REST call + auth) differs.
+async function runGeminiExtractor(text, docName, pageNum, base64Image = null, mimeType = "image/jpeg") {
+  const systemPrompt = buildExtractionPrompt(text, docName);
+  const modelName = geminiModel || "gemini-flash-latest";
+
+  const parts = [{ text: systemPrompt }];
+  if (base64Image) {
+    parts.push({ inline_data: { mime_type: mimeType || "image/jpeg", data: base64Image } });
+  }
+
+  const fetchBody = {
+    contents: [{ role: "user", parts }],
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: "application/json"
+    }
+  };
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 180000); // 180 seconds timeout
+
+  let response;
+  try {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiApiKey}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(fetchBody),
+      signal: controller.signal
+    });
+  } catch (fetchErr) {
+    if (fetchErr.name === 'AbortError') {
+      throw new Error("Gemini API took too long to respond (timeout). The page/image might be too complex.");
+    }
+    throw fetchErr;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!response.ok) {
+    let errDetail = "";
+    try {
+      const errJson = await response.json();
+      errDetail = (errJson.error && errJson.error.message) || "";
+    } catch (e) {}
+    throw new Error(`Gemini API error: ${response.status}${errDetail ? " - " + errDetail : ""}`);
+  }
+
+  const data = await response.json();
+  const candidate = data.candidates && data.candidates[0];
+  const rawText = (candidate && candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text) || "";
+  if (!rawText) {
+    const blockReason = data.promptFeedback && data.promptFeedback.blockReason;
+    throw new Error(`Gemini returned no content${blockReason ? " (blocked: " + blockReason + ")" : " (check API key/model name)"}.`);
+  }
+
+  return processRawModelResponse(rawText, docName, pageNum, base64Image, "Gemini");
+}
+
+// Single entry point used by all extraction call sites — dispatches to whichever cloud/local
+// LLM engine is currently selected, so callers don't need to branch on engineMode themselves.
+// mimeType is only relevant for Gemini (Ollama's API doesn't require one) and defaults to JPEG,
+// which matches the canvas-rendered OCR pages; pass the real file type for uploaded images.
+async function runLLMExtractor(text, docName, pageNum, base64Image = null, mimeType = "image/jpeg") {
+  if (engineMode === "gemini") {
+    return runGeminiExtractor(text, docName, pageNum, base64Image, mimeType);
+  }
+  return runOllamaExtractor(text, docName, pageNum, base64Image);
 }
 
 // Simple markdown formatter helper for chat replies
@@ -1979,7 +2223,8 @@ function extractTXTText(file) {
         let llmChunksProcessed = 0;
         let totalChunksCount = 0;
         
-        if (engineMode === "ollama") {
+        if (engineMode === "ollama" || engineMode === "gemini") {
+          const engineLabel = engineMode === "gemini" ? `Gemini (${geminiModel})` : `Ollama (${ollamaModel})`;
           const maxChunkSize = 8000;
           if (text.length > maxChunkSize) {
             let chunks = [];
@@ -1998,7 +2243,7 @@ function extractTXTText(file) {
               i = end;
             }
             totalChunksCount = chunks.length;
-            appendChatSystemMessage(`Text manual is large. Splitting into **${chunks.length} chunks** for Ollama processing...`);
+            appendChatSystemMessage(`Text manual is large. Splitting into **${chunks.length} chunks** for ${engineLabel} processing...`);
             
             for (let idx = 0; idx < chunks.length; idx++) {
               if (abortExtraction) {
@@ -2010,10 +2255,10 @@ function extractTXTText(file) {
                 continue;
               }
               llmChunksProcessed++;
-              progressStatus.innerText = `Processing chunk ${idx + 1} of ${chunks.length} with Ollama (${ollamaModel})...`;
+              progressStatus.innerText = `Processing chunk ${idx + 1} of ${chunks.length} with ${engineLabel}...`;
               progressFill.style.width = `${Math.round(((idx + 1) / chunks.length) * 100)}%`;
               
-              const result = await runOllamaExtractor(chunks[idx], file.name, 1);
+              const result = await runLLMExtractor(chunks[idx], file.name, 1);
               if (result.maintenance && result.maintenance.length > 0) {
                 maintCount += result.maintenance.length;
                 const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
@@ -2036,13 +2281,13 @@ function extractTXTText(file) {
             }
           } else {
             if (!shouldProcessPageWithLLM(text)) {
-              appendChatSystemMessage(`Skipped processing manual text with Ollama: no relevant keywords found.`);
+              appendChatSystemMessage(`Skipped processing manual text with ${engineLabel}: no relevant keywords found.`);
             } else {
               llmChunksProcessed = 1;
               totalChunksCount = 1;
-              progressStatus.innerText = `Extracting using local Ollama (${ollamaModel})...`;
+              progressStatus.innerText = `Extracting using ${engineLabel}...`;
               progressFill.style.width = "50%";
-              const result = await runOllamaExtractor(text, file.name, 1);
+              const result = await runLLMExtractor(text, file.name, 1);
               if (result.maintenance && result.maintenance.length > 0) {
                 maintCount += result.maintenance.length;
                 const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
@@ -2097,7 +2342,7 @@ function extractTXTText(file) {
           activeDocName.style.background = "hsla(190, 90%, 50%, 0.05)";
           safeCreateIcons();
           
-          const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmChunksProcessed} / ${totalChunksCount} chunks` : "heuristics";
+          const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmChunksProcessed} / ${totalChunksCount} chunks` : engineMode === "gemini" ? `Gemini API (${geminiModel}) processing ${llmChunksProcessed} / ${totalChunksCount} chunks` : "heuristics";
           appendChatSystemMessage(`Successfully parsed text manual **"${file.name}"** using **${labelModeText}**! Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
           renderGrid();
           isExtracting = false;
@@ -2105,8 +2350,8 @@ function extractTXTText(file) {
         }, 1000);
         
       } catch (err) {
-        console.error("Local Ollama text parsing failed:", err);
-        alert(`Ollama parsing failed: ${err.message}. Falling back to client Heuristics.`);
+        console.error("LLM text parsing failed:", err);
+        alert(`${engineMode === "gemini" ? "Gemini API" : "Ollama"} parsing failed: ${err.message}. Falling back to client Heuristics.`);
         const fallbackResult = runRuleExtractorHeuristics(text, file.name);
         if (fallbackResult.maintenance && fallbackResult.maintenance.length > 0) {
           const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
@@ -2197,7 +2442,7 @@ function extractPDFText(file) {
           const progressPercent = Math.round(((pageNum - rangeStart + 1) / (rangeEnd - rangeStart + 1)) * 100);
           progressFill.style.width = `${progressPercent}%`;
           
-          if (engineMode === "ollama") {
+          if (engineMode === "ollama" || engineMode === "gemini") {
             progressStatus.innerText = `Scraping page ${pageNum} text content...`;
           } else {
             progressStatus.innerText = "Extracting layout string layers...";
@@ -2207,7 +2452,7 @@ function extractPDFText(file) {
           let pageText = "";
           let base64Image = null;
 
-          if (engineMode === "ollama" && parseStrategy === "ocr") {
+          if ((engineMode === "ollama" || engineMode === "gemini") && parseStrategy === "ocr") {
             const viewport = page.getViewport({ scale: 1.0 });
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
@@ -2233,8 +2478,9 @@ function extractPDFText(file) {
           }
           prevPageWasIndex = false;
 
-          if (engineMode === "ollama") {
-            if (parseStrategy === "ocr" && pageNum === 1) {
+          if (engineMode === "ollama" || engineMode === "gemini") {
+            const engineLabel = engineMode === "gemini" ? "Gemini" : "Ollama";
+            if (engineMode === "ollama" && parseStrategy === "ocr" && pageNum === 1) {
               const lowerModel = ollamaModel.toLowerCase();
               if (!lowerModel.includes("vision") && !lowerModel.includes("llava") && !lowerModel.includes("minicpm") && !lowerModel.includes("qwen")) {
                 appendChatSystemMessage(`⚠️ **Model Warning**: You are using OCR Vision mode with **${ollamaModel}**, which appears to be a text-only model! Vision extraction will fail and return 0 results. Please select a vision model (e.g., \`llama3.2-vision\` or \`llava\`).`);
@@ -2242,13 +2488,13 @@ function extractPDFText(file) {
             }
 
             if (parseStrategy !== "ocr" && !shouldProcessPageWithLLM(pageText)) {
-              console.log(`Skipping Page ${pageNum} in Ollama mode: no high-value maintenance/parts keywords found.`);
+              console.log(`Skipping Page ${pageNum} in ${engineLabel} mode: no high-value maintenance/parts keywords found.`);
               continue;
             }
             llmPagesProcessed++;
-            progressStatus.innerText = `Ollama: Extracting from Page ${pageNum}...`;
+            progressStatus.innerText = `${engineLabel}: Extracting from Page ${pageNum}...`;
             try {
-              const result = await runOllamaExtractor(pageText, file.name, pageNum, base64Image);
+              const result = await runLLMExtractor(pageText, file.name, pageNum, base64Image);
               if (result.maintenance && result.maintenance.length > 0) {
                 maintCount += result.maintenance.length;
                 const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
@@ -2269,8 +2515,33 @@ function extractPDFText(file) {
               }
               renderGrid();
             } catch (err) {
-              console.warn(`Ollama failed on Page ${pageNum}, skipping page:`, err);
-              appendChatSystemMessage(`⚠️ **Page ${pageNum} Warning**: Failed to parse with Ollama. Skipping page...`);
+              console.warn(`${engineLabel} failed on Page ${pageNum}:`, err);
+              if (base64Image) {
+                // Heuristics cannot process images, so there is no safe fallback for OCR pages.
+                appendChatSystemMessage(`⚠️ **Page ${pageNum} Warning**: Failed to parse with ${engineLabel}. Skipping page...`);
+              } else {
+                appendChatSystemMessage(`⚠️ **Page ${pageNum} Warning**: Failed to parse with ${engineLabel} (${err.message}). Falling back to heuristics for this page...`);
+                const fallbackResult = runRuleExtractorHeuristics(pageText, file.name, pageNum);
+                if (fallbackResult.maintenance && fallbackResult.maintenance.length > 0) {
+                  maintCount += fallbackResult.maintenance.length;
+                  const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
+                  fallbackResult.maintenance.forEach((r, rIdx) => r.id = startingId + rIdx);
+                  maintenanceRegistry = [...maintenanceRegistry, ...fallbackResult.maintenance];
+                }
+                if (fallbackResult.spare_parts && fallbackResult.spare_parts.length > 0) {
+                  sparesCount += fallbackResult.spare_parts.length;
+                  const startingId = sparePartsRegistry.length > 0 ? Math.max(...sparePartsRegistry.map(r => r.id)) + 1 : 1;
+                  fallbackResult.spare_parts.forEach((r, rIdx) => r.id = startingId + rIdx);
+                  sparePartsRegistry = [...sparePartsRegistry, ...fallbackResult.spare_parts];
+                }
+                if (fallbackResult.troubleshooting && fallbackResult.troubleshooting.length > 0) {
+                  troubleCount += fallbackResult.troubleshooting.length;
+                  const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
+                  fallbackResult.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
+                  troubleshootingRegistry = [...troubleshootingRegistry, ...fallbackResult.troubleshooting];
+                }
+                renderGrid();
+              }
             }
           } else {
             // Heuristics Page level extractor
@@ -2309,7 +2580,7 @@ function extractPDFText(file) {
           safeCreateIcons();
           
           const pagesInRange = rangeEnd - rangeStart + 1;
-          const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmPagesProcessed} / ${pagesInRange} pages` : "heuristics";
+          const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmPagesProcessed} / ${pagesInRange} pages` : engineMode === "gemini" ? `Gemini API (${geminiModel}) processing ${llmPagesProcessed} / ${pagesInRange} pages` : "heuristics";
           const rangeLabel = isPartialRange ? `pages ${rangeStart}-${rangeEnd} of ${totalPages}` : `${totalPages} pages`;
           appendChatSystemMessage(`Completed client-side PDF processing for **"${file.name}"** (${rangeLabel}) using **${labelModeText}**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
           
@@ -2342,17 +2613,18 @@ async function extractImageText(file) {
       try {
         const base64Data = fileReader.result.split(',')[1];
         
+        const engineLabel = engineMode === "gemini" ? `Gemini (${geminiModel})` : `Ollama (${ollamaModel})`;
         progressFill.style.width = "50%";
-        progressStatus.innerText = `Analyzing image with ${ollamaModel}...`;
+        progressStatus.innerText = `Analyzing image with ${engineLabel}...`;
         
         let maintCount = 0;
         let sparesCount = 0;
         let troubleCount = 0;
         let notesCount = 0;
 
-        if (engineMode === "ollama") {
+        if (engineMode === "ollama" || engineMode === "gemini") {
           try {
-            const result = await runOllamaExtractor("OCR VISION EXTRACTION", file.name, 1, base64Data);
+            const result = await runLLMExtractor("OCR VISION EXTRACTION", file.name, 1, base64Data, file.type || "image/jpeg");
             if (result.maintenance && result.maintenance.length > 0) {
               maintCount += result.maintenance.length;
               const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
@@ -2373,11 +2645,11 @@ async function extractImageText(file) {
             }
             renderGrid();
           } catch (err) {
-            console.warn(`Ollama failed on image:`, err);
-            appendChatSystemMessage(`⚠️ **Image Warning**: Failed to parse with Ollama. Ensure you are using a vision model.`);
+            console.warn(`${engineLabel} failed on image:`, err);
+            appendChatSystemMessage(`⚠️ **Image Warning**: Failed to parse with ${engineLabel}. ${engineMode === "ollama" ? "Ensure you are using a vision model." : "Check your API key and model name."}`);
           }
         } else {
-          appendChatSystemMessage(`⚠️ **Image Processing**: Heuristics engine cannot process images. Please select 'local LLM' and use a Vision model.`);
+          appendChatSystemMessage(`⚠️ **Image Processing**: Heuristics engine cannot process images. Please select 'Ollama' or 'Gemini API' mode instead.`);
         }
         
         progressFill.style.width = "100%";
@@ -2391,7 +2663,7 @@ async function extractImageText(file) {
           activeDocName.style.background = "hsla(190, 90%, 50%, 0.05)";
           safeCreateIcons();
           
-          appendChatSystemMessage(`Completed client-side image processing for **"${file.name}"** using **local LLM (${ollamaModel})**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
+          appendChatSystemMessage(`Completed client-side image processing for **"${file.name}"** using **${engineLabel}**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
           
           renderGrid();
           isExtracting = false;
@@ -2533,12 +2805,21 @@ function runRuleExtractorHeuristics(text, docName, pageNum = 1) {
   
   // List of keywords indicating maintenance checks
   const keywords = ["replace", "lubricate", "grease", "inspect", "check", "clean", "torque", "coaxiality", "tighten", "weld", "drain", "replenish", "flush", "tighten"];
+
+  // Keywords/verbs used for the prose-based troubleshooting fallback below
+  const problemKeywords = ["fault", "failure", "fails", "failed", "malfunction", "leak", "leaking", "leaks", "noise", "noisy", "overheat", "overheating", "vibration", "vibrates", "error", "trip", "trips", "tripped", "stall", "stalls", "jam", "jammed", "does not", "doesn't", "won't", "will not", "unable to", "abnormal", "excessive", "low pressure", "high pressure", "high temperature", "burnt", "burn out", "seized", "worn out", "broken", "cracked", "loose", "not working", "won't start", "will not start"];
+  const causeIndicators = ["caused by", "due to", "because of", "results from", "is due to"];
+  const fixActionVerbs = ["check", "replace", "clean", "tighten", "reset", "adjust", "inspect", "repair", "lubricate", "bleed", "drain", "recalibrate", "realign", "re-torque", "flush", "refill", "top up", "clear", "remove", "install", "re-seat"];
+  const causeSplitRegex = new RegExp("\\b(" + causeIndicators.join("|") + ")\\b", "i");
+  const fixVerbRegex = new RegExp("\\b(" + fixActionVerbs.join("|") + ")\\b", "i");
+  const consumedAsFixIdx = new Set(); // sentences already used as the "fix" half of a prior problem sentence
   
   let lastSeenComponent = "System Component"; // Contextual tracking
 
-  sentences.forEach((sentence) => {
+  for (let sIdx = 0; sIdx < sentences.length; sIdx++) {
+    const sentence = sentences[sIdx];
     let cleanSentence = sentence.trim().replace(/^(\d+[\.\)\-\s]*)+/i, "").trim();
-    if (cleanSentence.startsWith("S") && cleanSentence.length < 5) return;
+    if (cleanSentence.startsWith("S") && cleanSentence.length < 5) continue;
     
     const lowerS = cleanSentence.toLowerCase();
 
@@ -2547,7 +2828,7 @@ function runRuleExtractorHeuristics(text, docName, pageNum = 1) {
     const isGenericHeader = /check items|maintenance regulations|troubleshooting methods|common troubles|trouble phenomena|check before|inspection before|periodic maintenance/i.test(lowerS);
     const isTOCLine = /\.{3,}/.test(cleanSentence) || /\.\s*\.\s*\.\s*\./.test(cleanSentence);
     const isLikelyIndexEntry = /(page\s*)?\d{1,3}$/.test(lowerS) && cleanSentence.length < 170 && !/[;:]/.test(cleanSentence);
-    if (isHeaderOrIndicator || isGenericHeader || isTOCLine || isLikelyIndexEntry) return;
+    if (isHeaderOrIndicator || isGenericHeader || isTOCLine || isLikelyIndexEntry) continue;
 
     let componentMatch = isolateComponent(cleanSentence);
     if (componentMatch !== "NA") {
@@ -2590,34 +2871,131 @@ function runRuleExtractorHeuristics(text, docName, pageNum = 1) {
     // 2. Spare Parts Extraction
     if (hasPart && (lowerS.includes("spare") || lowerS.includes("part no") || lowerS.includes("model") || lowerS.includes("type") || lowerS.includes("replace") || lowerS.includes("drawing"))) {
       let partName = isolateComponent(cleanSentence);
-      
+
+      // A sentence can carry more than one reference code (e.g. a part number AND a
+      // separate drawing/model number). Collect all of them instead of just the first.
+      const allCodeMatches = cleanSentence.match(/\b[A-Z0-9]{4,15}-[A-Z0-9\-]{2,15}\b/g) || [];
       let refCode = "NA";
-      const codeMatch = cleanSentence.match(/[A-Z0-9]{4,15}-[A-Z0-9\-]{2,15}/);
-      if (codeMatch) {
-        refCode = codeMatch[0];
+      let drawingModelNo = "NA";
+      if (allCodeMatches.length > 0) {
+        refCode = allCodeMatches[0];
+        if (allCodeMatches.length > 1) drawingModelNo = allCodeMatches[1];
       } else {
         const fagMatch = lowerS.match(/\b\d{5,10}\b/);
         if (fagMatch) refCode = fagMatch[0];
       }
-      
+      // An explicit "drawing/dwg/model" label always wins over the positional guess above.
+      const dwgLabelMatch = cleanSentence.match(/\b(?:dwg|drawing|model)[\.:\s#]*\s*([A-Za-z0-9][A-Za-z0-9\-\/]{1,20})/i);
+      if (dwgLabelMatch) drawingModelNo = dwgLabelMatch[1];
+
+      // Item / position number, e.g. "Item 12", "Pos. 4", "Ref No. 7"
+      let itemNo = "NA";
+      const itemMatch = cleanSentence.match(/\b(?:item|pos|position|ref)\.?\s*(?:no\.?)?\s*[:#]?\s*(\d{1,3})\b/i);
+      if (itemMatch) itemNo = itemMatch[1];
+
+      // Quantity actually stated in the text, e.g. "qty 2", "2 pcs", "2 units each"
+      let quantity = "NA";
+      const qtyMatch = lowerS.match(/\b(?:qty|quantity)[\.:\s]*(\d{1,4})\b/) ||
+        lowerS.match(/\b(\d{1,4})\s*(?:pcs|pieces|units|nos|off|each)\b/);
+      if (qtyMatch) quantity = qtyMatch[1];
+
+      // Recommended stock level, only when explicitly mentioned (never fabricated)
+      let recommendedStockQty = "NA";
+      const stockMatch = lowerS.match(/\b(?:recommended stock|stock level|keep|maintain)\D{0,20}?(\d{1,4})\s*(?:pcs|pieces|units|in stock|on hand|off)?\b/);
+      if (stockMatch) recommendedStockQty = stockMatch[1];
+
+      // OEM / governing standard body, e.g. ISO 9001, DIN 934, API, ASME
+      let oemStandardBody = "NA";
+      const standardMatch = cleanSentence.match(/\b(ISO|DIN|ANSI|API|ASME|JIS|BS|SAE|NEMA|IEC)[\-\s]?\d{0,6}\b/);
+      if (standardMatch) oemStandardBody = standardMatch[0];
+
+      // Warranty duration, e.g. "12 months warranty", "warranty period of 1 year"
+      let warrantyPeriod = "NA";
+      const warrantyMatch = lowerS.match(/(\d{1,3}\s*(?:years?|months?))\s*warranty/) ||
+        lowerS.match(/warranty\D{0,15}?(\d{1,3}\s*(?:years?|months?))/);
+      if (warrantyMatch) warrantyPeriod = warrantyMatch[1];
+
+      // Replacement/usage frequency, e.g. "replace every 6 months", "every 500 hours"
+      let frequencyOfUse = "NA";
+      const freqMatch = lowerS.match(/every\s+(\d{1,5}\s*(?:hours?|months?|weeks?|years?|days?))/);
+      if (freqMatch) frequencyOfUse = `Replace every ${freqMatch[1]}`;
+
+      // Reuse the same contextual component tracking used for maintenance rows above,
+      // instead of a generic placeholder that carries no real information.
+      const subsystemLocation = componentMatch !== "NA" ? componentMatch : (lastSeenComponent !== "System Component" ? lastSeenComponent : "NA");
+
       output.spare_parts.push({
         id: 0,
         equipment_title: docName ? docName.replace(/\.[^/.]+$/, "") : "NA",
-        subsystem_location: "System Component Location",
-        item_no: "NA",
+        subsystem_location: subsystemLocation,
+        item_no: itemNo,
         part_name: partName,
         part_number_code: refCode,
-        drawing_model_no: "NA",
-        oem_standard_body: "NA",
+        drawing_model_no: drawingModelNo,
+        oem_standard_body: oemStandardBody,
         part_categorization: lowerS.includes("oil") || lowerS.includes("filter") || lowerS.includes("grease") ? "Consumable" : "Critical Spare",
-        quantity: "1",
-        recommended_stock_qty: "1",
-        warranty_period: "NA",
-        frequency_of_use: "NA",
+        quantity: quantity !== "NA" ? quantity : "1",
+        recommended_stock_qty: recommendedStockQty,
+        warranty_period: warrantyPeriod,
+        frequency_of_use: frequencyOfUse,
         page: pageNum
       });
     }
-  });
+
+    // 3. Prose-based Troubleshooting Fallback
+    // Catches problem/cause/fix narratives that aren't in a literal "Symptom | Cause | Elimination" table,
+    // which the structured table extractor above cannot see.
+    if (!consumedAsFixIdx.has(sIdx)) {
+      // Guard against negated phrasing ("no fault found", "without leaks", "free of vibration"),
+      // which mentions a problem keyword while explicitly stating the problem is absent.
+      const hasProblem = problemKeywords.some(pk => {
+        const idx = lowerS.indexOf(pk);
+        if (idx === -1) return false;
+        const preceding = lowerS.substring(Math.max(0, idx - 25), idx);
+        const isNegated = /\b(no|not|without|free of|absence of|never)\s+(?:any\s+)?(?:signs?\s+of\s+)?$/.test(preceding);
+        return !isNegated;
+      });
+      if (hasProblem) {
+        let problemPart = "";
+        let solutionPart = "";
+
+        const causeMatch = cleanSentence.match(causeSplitRegex);
+        const fixMatch = cleanSentence.match(fixVerbRegex);
+
+        if (causeMatch && causeMatch.index > 5) {
+          problemPart = cleanSentence.substring(0, causeMatch.index).trim();
+          solutionPart = cleanSentence.substring(causeMatch.index).trim();
+        } else if (fixMatch && fixMatch.index > 5) {
+          problemPart = cleanSentence.substring(0, fixMatch.index).trim();
+          solutionPart = cleanSentence.substring(fixMatch.index).trim();
+        } else if (sIdx + 1 < sentences.length) {
+          // No split found within this sentence — check if the NEXT sentence reads like the fix,
+          // e.g. "Pump fails to build pressure." followed by "Check the relief valve setting."
+          const nextClean = sentences[sIdx + 1].trim().replace(/^(\d+[\.\)\-\s]*)+/i, "").trim();
+          const nextLower = nextClean.toLowerCase();
+          const nextHasProblem = problemKeywords.some(pk => nextLower.includes(pk));
+          const nextHasFix = fixActionVerbs.some(fv => nextLower.includes(fv)) || causeIndicators.some(ci => nextLower.includes(ci));
+          if (!nextHasProblem && nextHasFix && nextClean.length > 5 && nextClean.length < 250) {
+            problemPart = cleanSentence;
+            solutionPart = nextClean;
+            consumedAsFixIdx.add(sIdx + 1);
+          }
+        }
+
+        if (problemPart.length > 5 && solutionPart.length > 5 && problemPart.length < 250 && solutionPart.length < 250) {
+          let comp = componentMatch !== "NA" ? componentMatch : lastSeenComponent;
+          output.troubleshooting.push({
+            id: 0,
+            equipment_title: docName ? docName.replace(/\.[^/.]+$/, "") : "NA",
+            subsystem_component: comp,
+            problem: problemPart,
+            root_cause_solution: solutionPart,
+            page: pageNum
+          });
+        }
+      }
+    }
+  }
 
   // Filter out incomplete/placeholder rows with no valid data
   output.maintenance = output.maintenance.filter(isCleanMaintenanceRow);
@@ -2690,6 +3068,58 @@ function appendUserMessage(text) {
 }
 
 // Client-Side Cognitive Matching and Context Extraction (asynchronous for Ollama RAG support)
+// Sends a plain-text (non-JSON) prompt to whichever LLM engine is active and returns the raw
+// reply text. Used by the RAG chatbot, which needs a conversational answer rather than the
+// structured JSON extraction produced by runOllamaExtractor/runGeminiExtractor.
+async function callLLMRagAnswer(ragPrompt) {
+  if (engineMode === "gemini") {
+    const modelName = geminiModel || "gemini-flash-latest";
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiApiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: ragPrompt }] }],
+        generationConfig: { temperature: 0.2 }
+      })
+    });
+    if (!response.ok) {
+      let errDetail = "";
+      try {
+        const errJson = await response.json();
+        errDetail = (errJson.error && errJson.error.message) || "";
+      } catch (e) {}
+      throw new Error(`Gemini API returned HTTP ${response.status}${errDetail ? " - " + errDetail : ""}`);
+    }
+    const data = await response.json();
+    const candidate = data.candidates && data.candidates[0];
+    const text = (candidate && candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text) || "";
+    if (!text) {
+      throw new Error("Gemini returned no content (check API key/model name).");
+    }
+    return text.trim();
+  }
+
+  const response = await fetch(`${ollamaUrl}/api/generate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: ollamaModel,
+      prompt: ragPrompt,
+      stream: false,
+      options: {
+        temperature: 0.2
+      }
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`Ollama Server returned HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return data.response.trim();
+}
+
 async function processCognitiveChatSearch(query) {
   appendUserMessage(query);
   
@@ -2700,7 +3130,7 @@ async function processCognitiveChatSearch(query) {
   loader.innerHTML = `
     <div class="msg-avatar"><i data-lucide="bot"></i></div>
     <div class="msg-content">
-      <p>${engineMode === "ollama" ? "Synthesizing answer with local LLM..." : "Consulting cog-search indexes..."}</p>
+      <p>${engineMode === "ollama" ? "Synthesizing answer with local LLM..." : engineMode === "gemini" ? "Synthesizing answer with Gemini API..." : "Consulting cog-search indexes..."}</p>
     </div>
   `;
   chatMessages.appendChild(loader);
@@ -2760,8 +3190,8 @@ async function processCognitiveChatSearch(query) {
   gridMatches.sort((a, b) => b.score - a.score);
   const matchingRecordIds = gridMatches.map(m => m.rowId);
 
-  // If Ollama engine mode is active
-  if (engineMode === "ollama") {
+  // If a cloud/local LLM engine mode is active
+  if (engineMode === "ollama" || engineMode === "gemini") {
     try {
       let contextText = "";
       let topPageNum = null;
@@ -2786,35 +3216,16 @@ ${contextText}
 
 User Question: ${query}`;
 
-      const response = await fetch(`${ollamaUrl}/api/generate`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: ollamaModel,
-          prompt: ragPrompt,
-          stream: false,
-          options: {
-            temperature: 0.2
-          }
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`Ollama Server returned HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
-      const aiReply = data.response.trim();
+      const aiReply = await callLLMRagAnswer(ragPrompt);
 
       const loaderElem = document.getElementById("chat-loader");
       if (loaderElem) loaderElem.remove();
 
       let responseHTML = `<div style="line-height: 1.5; white-space: normal;">${renderMarkdown(aiReply)}</div>`;
       
+      const ragEngineLabel = engineMode === "gemini" ? `Gemini RAG (Model: <strong>${geminiModel}</strong>)` : `Ollama RAG (Model: <strong>${ollamaModel}</strong>)`;
       responseHTML += `<div class="msg-meta">
-        <span>Ollama RAG (Model: <strong>${ollamaModel}</strong>)</span>
+        <span>${ragEngineLabel}</span>
         ${topPageNum ? `<span class="page-ref">Page ${topPageNum}</span>` : '<span class="page-ref">General Context</span>'}
       </div>`;
 
@@ -2839,8 +3250,9 @@ User Question: ${query}`;
       return;
 
     } catch (err) {
-      console.error("Local Ollama RAG failed, falling back to heuristics:", err);
-      appendChatSystemMessage(`⚠️ **Ollama connection failed**: ${err.message}. Falling back to keyword search index.`);
+      const engineLabel = engineMode === "gemini" ? "Gemini" : "Ollama";
+      console.error(`${engineLabel} RAG failed, falling back to heuristics:`, err);
+      appendChatSystemMessage(`⚠️ **${engineLabel} connection failed**: ${err.message}. Falling back to keyword search index.`);
     }
   }
 
@@ -2976,12 +3388,18 @@ function initApp() {
   
   // Initialize settings panel visibility and state on page load
   if (engineModeSelect) {
-    engineMode = engineModeSelect.value || "heuristics";
+    engineMode = engineModeSelect.value || "ollama";
     if (engineMode === "ollama") {
       ollamaSettingsGroup.style.display = "block";
+      if (geminiSettingsGroup) geminiSettingsGroup.style.display = "none";
       syncOllama();
+    } else if (engineMode === "gemini") {
+      ollamaSettingsGroup.style.display = "none";
+      if (geminiSettingsGroup) geminiSettingsGroup.style.display = "block";
+      syncGemini();
     } else {
       ollamaSettingsGroup.style.display = "none";
+      if (geminiSettingsGroup) geminiSettingsGroup.style.display = "none";
       updateOllamaStatus("offline", "Local Heuristics");
     }
   }

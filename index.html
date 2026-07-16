@@ -116,13 +116,14 @@
             <div class="form-group">
               <label for="engine-mode">Extraction Engine Mode</label>
               <select id="engine-mode" class="settings-select">
-                <option value="ollama" selected>Ollama (Intelligent)</option>
-                <option value="heuristics">Heuristics (Fast)</option>
+                <option value="ollama" selected>Ollama (Local, Intelligent)</option>
+                <option value="gemini">Gemini API (Cloud, Fast + Vision)</option>
+                <option value="heuristics">Heuristics (Fast, No AI)</option>
               </select>
             </div>
             
             <div class="form-group" id="parse-strategy-group">
-              <label for="parse-strategy">Parse Strategy (For Ollama)</label>
+              <label for="parse-strategy">Parse Strategy (For Ollama/Gemini)</label>
               <select id="parse-strategy" class="settings-select">
                 <option value="native" selected>Native Text (Fast)</option>
                 <option value="ocr">OCR Vision (Scanned/Handwritten)</option>
@@ -160,6 +161,29 @@
               </div>
               <div class="ollama-info" id="ollama-info-text">
                 Ollama not verified. Click "Sync" to check local models.
+              </div>
+            </div>
+
+            <div id="gemini-settings-group" style="display: none;">
+              <div class="form-group">
+                <label for="gemini-api-key">Gemini API Key</label>
+                <input type="password" id="gemini-api-key" class="settings-input" placeholder="Enter your Gemini API key">
+                <p style="font-size: 0.72rem; color: var(--text-muted); margin-top: 2px;">Stored only in this browser's local storage. Never share this key or commit it to source control.</p>
+              </div>
+              <div class="form-row">
+                <div class="form-group" style="flex: 1;">
+                  <label for="gemini-model-select">Gemini Model</label>
+                  <select id="gemini-model-select" class="settings-select">
+                    <option value="gemini-flash-latest">gemini-flash-latest (default, click Verify Key to refresh)</option>
+                  </select>
+                </div>
+                <button type="button" class="btn btn-secondary" id="btn-test-gemini" style="align-self: flex-end; height: 38px; margin-bottom: 0px; margin-left: 8px; border-radius: 8px;">
+                  <i data-lucide="refresh-cw"></i>
+                  <span>Verify Key</span>
+                </button>
+              </div>
+              <div class="ollama-info" id="gemini-info-text">
+                Gemini not verified. Click "Verify Key" to test the connection.
               </div>
             </div>
           </div>
