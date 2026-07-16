@@ -116,8 +116,8 @@
             <div class="form-group">
               <label for="engine-mode">Extraction Engine Mode</label>
               <select id="engine-mode" class="settings-select">
-                <option value="ollama" selected>Ollama (Local, Intelligent)</option>
-                <option value="gemini">Gemini API (Cloud, Fast + Vision)</option>
+                <option value="gemini" selected>Gemini API (Cloud, Fast + Vision)</option>
+                <option value="ollama">Ollama (Local, Intelligent)</option>
                 <option value="heuristics">Heuristics (Fast, No AI)</option>
               </select>
             </div>
@@ -167,14 +167,23 @@
             <div id="gemini-settings-group" style="display: none;">
               <div class="form-group">
                 <label for="gemini-api-key">Gemini API Key</label>
-                <input type="password" id="gemini-api-key" class="settings-input" placeholder="Enter your Gemini API key">
-                <p style="font-size: 0.72rem; color: var(--text-muted); margin-top: 2px;">Stored only in this browser's local storage. Never share this key or commit it to source control.</p>
+                <div class="form-row" style="gap: 8px; align-items: flex-end;">
+                  <input type="password" id="gemini-api-key" class="settings-input" placeholder="Paste key here (never commit keys)" autocomplete="off" spellcheck="false" style="flex: 1;">
+                  <button type="button" class="btn btn-secondary" id="btn-clear-gemini-key" title="Remove key from this browser" style="height: 38px; border-radius: 8px; white-space: nowrap;">
+                    <i data-lucide="key-round"></i>
+                    <span>Clear</span>
+                  </button>
+                </div>
+                <p style="font-size: 0.72rem; color: var(--text-muted); margin-top: 2px;">Use a Google AI Studio key (<code>AIza...</code> or <code>AQ....</code>) from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" style="color: var(--accent-cyan);">aistudio.google.com/apikey</a>. Saved in <strong>this browser only</strong> — not in source/git. Rotate any key that was previously hardcoded.</p>
               </div>
               <div class="form-row">
                 <div class="form-group" style="flex: 1;">
                   <label for="gemini-model-select">Gemini Model</label>
                   <select id="gemini-model-select" class="settings-select">
-                    <option value="gemini-flash-latest">gemini-flash-latest (default, click Verify Key to refresh)</option>
+                    <option value="gemini-3.1-flash-lite" selected>gemini-3.1-flash-lite — Flash-Lite: best for high-volume, simpler extraction</option>
+                    <option value="gemini-flash-latest">gemini-flash-latest — Flash: better for dense manuals</option>
+                    <option value="gemini-3.5-flash">gemini-3.5-flash — Flash: better for dense manuals</option>
+                    <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview — Pro: best for dense manuals</option>
                   </select>
                 </div>
                 <button type="button" class="btn btn-secondary" id="btn-test-gemini" style="align-self: flex-end; height: 38px; margin-bottom: 0px; margin-left: 8px; border-radius: 8px;">

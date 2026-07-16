@@ -104,12 +104,34 @@ if (registryModeTabs) {
 }
 
 // AI Engine configuration state
-let engineMode = "ollama"; // "heuristics" or "ollama" — overridden on load by initApp() from the UI select, but kept in sync here defensively
+let engineMode = "gemini"; // "gemini" | "ollama" | "heuristics"
 let parseStrategy = "native"; // "native" or "ocr"
 let ollamaUrl = "http://localhost:11434";
 let ollamaModel = "";
 let isExtracting = false;
 let abortExtraction = false;
+
+const ENGINE_MODE_KEY = "omniparse_engine_mode";
+try {
+  const savedEngineMode = localStorage.getItem(ENGINE_MODE_KEY);
+  if (savedEngineMode === "gemini" || savedEngineMode === "ollama" || savedEngineMode === "heuristics") {
+    engineMode = savedEngineMode;
+  }
+} catch (e) {}
+
+function saveEngineMode() {
+  try {
+    localStorage.setItem(ENGINE_MODE_KEY, engineMode);
+  } catch (e) {}
+}
+
+function isOllamaMode() {
+  return engineMode === "ollama";
+}
+
+function isGeminiMode() {
+  return engineMode === "gemini";
+}
 
 // Persisted Ollama connection settings — remembers the last endpoint/model used
 // across page reloads instead of always resetting to the hardcoded default above.
@@ -137,25 +159,144 @@ function saveOllamaSettings() {
 }
 
 // Google Gemini API (cloud) engine configuration state.
-// SECURITY NOTE: this file is a client-side script served directly to the browser — anything
-// stored here (including the default API key below) is visible to anyone who views the page
-// source, opens dev tools, or inspects the network tab. This hardcoded default was added at the
-// user's explicit request for a local/private tool only. Rotate this key immediately if this
-// file is ever shared, deployed publicly, or committed to a shared/public repository.
-let geminiApiKey = "AQ.Ab8RN6Je-zL-tu6YNX8kBbgzimKIaCxX6vfcUtXLMeBhnnobAA";
-let geminiModel = "gemini-flash-latest"; // Google auto-updates this alias to their current flash-tier stable model
+// SECURITY: never hardcode API keys in source. Keys are entered in Settings and stored only in
+// this browser's localStorage (not committed to git). Anyone with the page can still see the key
+// in DevTools/network — for public deploys, proxy through a backend instead.
+let geminiApiKey = "";
+let geminiModel = "gemini-3.1-flash-lite"; // Fastest Gemini tier for high-volume extraction
 
 const GEMINI_SETTINGS_KEY = "omniparse_gemini_settings";
+const GEMINI_FALLBACK_MODEL = "gemini-flash-latest";
+const GEMINI_RECOMMENDED_MODELS = [
+  {
+    id: "gemini-3.1-flash-lite",
+    label: "gemini-3.1-flash-lite — Flash-Lite: best for high-volume, simpler extraction"
+  },
+  {
+    id: "gemini-flash-latest",
+    label: "gemini-flash-latest — Flash: better for dense manuals"
+  },
+  {
+    id: "gemini-3.5-flash",
+    label: "gemini-3.5-flash — Flash: better for dense manuals"
+  },
+  {
+    id: "gemini-3.1-pro-preview",
+    label: "gemini-3.1-pro-preview — Pro: best for dense manuals"
+  }
+];
+const RETIRED_GEMINI_MODEL_PATTERNS = [
+  /^gemini-1\./i,
+  /^gemini-2\.5-flash$/i,
+  /^gemini-2\.5-pro$/i,
+  /^gemini-pro$/i,
+  /^gemini-flash$/i
+];
+
+function isRetiredGeminiModel(modelName) {
+  const name = String(modelName || "").trim();
+  if (!name) return true;
+  return RETIRED_GEMINI_MODEL_PATTERNS.some(rx => rx.test(name));
+}
+
+function normalizeGeminiModel(modelName) {
+  const name = String(modelName || "").trim().replace(/^models\//, "");
+  if (!name || isRetiredGeminiModel(name)) return GEMINI_FALLBACK_MODEL;
+  return name;
+}
+
+function geminiModelLabel(modelId) {
+  const id = normalizeGeminiModel(modelId);
+  const recommended = GEMINI_RECOMMENDED_MODELS.find(m => m.id === id);
+  if (recommended) return recommended.label;
+  const lower = id.toLowerCase();
+  if (lower.includes("flash-lite") || lower.includes("flashlite")) {
+    return `${id} — Flash-Lite: best for high-volume, simpler extraction`;
+  }
+  if (lower.includes("pro")) {
+    return `${id} — Pro: best for dense manuals`;
+  }
+  if (lower.includes("flash")) {
+    return `${id} — Flash: better for dense manuals`;
+  }
+  return id;
+}
+
+function populateGeminiModelSelect(availableModelIds, preferredModelId) {
+  if (!geminiModelInput) return;
+
+  const available = new Set(
+    (availableModelIds || [])
+      .map(id => normalizeGeminiModel(id))
+      .filter(Boolean)
+  );
+  const hasAvailabilityFilter = available.size > 0;
+
+  geminiModelInput.innerHTML = "";
+
+  // Keep curated guidance labels at the top.
+  const recommendedIds = new Set();
+  GEMINI_RECOMMENDED_MODELS.forEach(model => {
+    if (hasAvailabilityFilter && !available.has(model.id)) return;
+    recommendedIds.add(model.id);
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.innerText = model.label;
+    geminiModelInput.appendChild(option);
+  });
+
+  // Append any other live models returned by the API.
+  if (hasAvailabilityFilter) {
+    Array.from(available)
+      .filter(id => !recommendedIds.has(id) && !isRetiredGeminiModel(id))
+      .sort((a, b) => a.localeCompare(b))
+      .forEach(id => {
+        const option = document.createElement("option");
+        option.value = id;
+        option.innerText = geminiModelLabel(id);
+        geminiModelInput.appendChild(option);
+      });
+  }
+
+  // If the API filter excluded everything (or list was empty), restore curated defaults.
+  if (geminiModelInput.options.length === 0) {
+    GEMINI_RECOMMENDED_MODELS.forEach(model => {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.innerText = model.label;
+      geminiModelInput.appendChild(option);
+    });
+  }
+
+  const preferred = normalizeGeminiModel(preferredModelId || geminiModel);
+  const optionIds = Array.from(geminiModelInput.options).map(o => o.value);
+  let selected = optionIds.includes(preferred) ? preferred : null;
+  if (!selected) {
+    selected = optionIds.find(id => id === "gemini-3.1-flash-lite")
+      || optionIds.find(id => id === GEMINI_FALLBACK_MODEL)
+      || optionIds[0];
+  }
+  geminiModelInput.value = selected;
+  geminiModel = normalizeGeminiModel(selected);
+}
+
 let savedGeminiSettings = null;
 try {
   const rawGeminiSettings = localStorage.getItem(GEMINI_SETTINGS_KEY);
   if (rawGeminiSettings) {
     savedGeminiSettings = JSON.parse(rawGeminiSettings);
-    if (savedGeminiSettings && savedGeminiSettings.apiKey) {
-      geminiApiKey = savedGeminiSettings.apiKey;
+    if (savedGeminiSettings && typeof savedGeminiSettings.apiKey === "string") {
+      geminiApiKey = savedGeminiSettings.apiKey.trim();
     }
     if (savedGeminiSettings && savedGeminiSettings.model) {
-      geminiModel = savedGeminiSettings.model;
+      geminiModel = normalizeGeminiModel(savedGeminiSettings.model);
+      if (geminiModel !== savedGeminiSettings.model) {
+        savedGeminiSettings.model = geminiModel;
+        localStorage.setItem(GEMINI_SETTINGS_KEY, JSON.stringify({
+          apiKey: geminiApiKey,
+          model: geminiModel
+        }));
+      }
     }
   }
 } catch (e) {
@@ -164,8 +305,139 @@ try {
 
 function saveGeminiSettings() {
   try {
-    localStorage.setItem(GEMINI_SETTINGS_KEY, JSON.stringify({ apiKey: geminiApiKey, model: geminiModel }));
+    // Persist only in local browser storage — never write secrets into source files.
+    localStorage.setItem(GEMINI_SETTINGS_KEY, JSON.stringify({
+      apiKey: String(geminiApiKey || "").trim(),
+      model: geminiModel
+    }));
   } catch (e) {}
+}
+
+function clearGeminiApiKey() {
+  geminiApiKey = "";
+  if (geminiApiKeyInput) geminiApiKeyInput.value = "";
+  saveGeminiSettings();
+}
+
+function looksLikeGeminiApiKey(key) {
+  const raw = String(key || "").trim();
+  // AI Studio now issues auth keys as "AQ...." and older standard keys as "AIza...".
+  return /^(AIza[0-9A-Za-z_\-]{20,}|AQ\.[0-9A-Za-z_\-]{20,})$/.test(raw);
+}
+
+function geminiAuthHint(key) {
+  const raw = String(key || "").trim();
+  if (!raw) return "Paste a Gemini API key from Google AI Studio (https://aistudio.google.com/apikey).";
+  if (raw.startsWith("ya29.")) {
+    return "This looks like an OAuth access token, not a Gemini API key. Create an API key at https://aistudio.google.com/apikey.";
+  }
+  if (!looksLikeGeminiApiKey(raw)) {
+    return "Unexpected key format. Gemini AI Studio keys usually start with AIza... or AQ.";
+  }
+  return "";
+}
+
+function buildGeminiUrl(path) {
+  return `https://generativelanguage.googleapis.com/v1beta/${path.replace(/^\//, "")}`;
+}
+
+function geminiFetchHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "x-goog-api-key": String(geminiApiKey || "").trim()
+  };
+}
+
+function sleepMs(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Parse Retry-After as delta-seconds or HTTP-date. Returns ms to wait (0 if absent/invalid).
+function parseRetryAfterMs(retryAfterHeader) {
+  if (!retryAfterHeader) return 0;
+  const raw = String(retryAfterHeader).trim();
+  if (!raw) return 0;
+
+  // Delta-seconds (integer), including decimals some proxies send.
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    return Math.max(0, Math.round(parseFloat(raw) * 1000));
+  }
+
+  const asDate = Date.parse(raw);
+  if (!isNaN(asDate)) {
+    return Math.max(0, asDate - Date.now());
+  }
+  return 0;
+}
+
+// Gemini generateContent with 429-aware exponential backoff retries.
+// Sleeps only inside THIS request's coroutine — other concurrent page workers keep running.
+async function fetchGeminiGenerateContent(modelName, fetchBody, options = {}) {
+  const timeoutMs = options.timeoutMs || 180000;
+  const maxAttempts = options.maxAttempts || 5;
+  const requestLabel = options.requestLabel || modelName;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(buildGeminiUrl(`models/${modelName}:generateContent`), {
+        method: "POST",
+        headers: geminiFetchHeaders(),
+        body: JSON.stringify(fetchBody),
+        signal: controller.signal
+      });
+
+      // Tier 1 overload shows up as 503 more often than 429 — retry both the same way.
+      if (response.status !== 429 && response.status !== 503) {
+        return response;
+      }
+
+      // Drain body so the connection can be reused; do not block sibling workers.
+      try { await response.text(); } catch (e) { /* ignore */ }
+
+      const retryAfterHeader = response.headers.get("retry-after");
+      const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
+      // Slightly longer base backoff for 503 overload vs pure 429.
+      const base = response.status === 503 ? 1200 : 800;
+      const backoffMs = Math.min(25000, base * Math.pow(2, attempt - 1)) + Math.floor(Math.random() * 300);
+      const waitMs = Math.max(retryAfterMs, backoffMs);
+      lastError = new Error(
+        `Gemini API ${response.status === 503 ? "overloaded (503)" : "rate limited (429)"} ` +
+        `on attempt ${attempt}/${maxAttempts}`
+      );
+      if (attempt < maxAttempts) {
+        console.warn(
+          `[${requestLabel}] ${lastError.message}. ` +
+          `Retry-After=${retryAfterHeader || "n/a"} → pausing THIS request ${waitMs}ms ` +
+          `(other concurrent pages continue).`
+        );
+        await sleepMs(waitMs);
+        continue;
+      }
+      throw lastError;
+    } catch (fetchErr) {
+      if (fetchErr.name === "AbortError") {
+        throw new Error("Gemini API took too long to respond (timeout). The page/image might be too complex.");
+      }
+      // Re-throw intentional rate-limit exhaustion from above.
+      if (fetchErr === lastError && attempt >= maxAttempts) throw fetchErr;
+
+      lastError = fetchErr;
+      if (attempt < maxAttempts) {
+        const waitMs = Math.min(12000, 500 * Math.pow(2, attempt - 1));
+        console.warn(`[${requestLabel}] Gemini network error on attempt ${attempt}/${maxAttempts}: ${fetchErr.message}. Retrying this request in ${waitMs}ms...`);
+        await sleepMs(waitMs);
+        continue;
+      }
+      throw fetchErr;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  throw lastError || new Error("Gemini API request failed after retries.");
 }
 
 // Equipment Manifest state
@@ -220,6 +492,7 @@ const geminiSettingsGroup = document.getElementById("gemini-settings-group");
 const geminiApiKeyInput = document.getElementById("gemini-api-key");
 const geminiModelInput = document.getElementById("gemini-model-select");
 const btnTestGemini = document.getElementById("btn-test-gemini");
+const btnClearGeminiKey = document.getElementById("btn-clear-gemini-key");
 const geminiInfoText = document.getElementById("gemini-info-text");
 
 // Reflect any restored/persisted endpoint into the input immediately
@@ -275,6 +548,7 @@ if (equipmentCategorySelect) {
 if (engineModeSelect) {
   engineModeSelect.addEventListener("change", (e) => {
     engineMode = e.target.value;
+    saveEngineMode();
     if (engineMode === "ollama") {
       ollamaSettingsGroup.style.display = "block";
       if (geminiSettingsGroup) geminiSettingsGroup.style.display = "none";
@@ -321,11 +595,14 @@ if (geminiApiKeyInput) {
     geminiApiKey = e.target.value.trim();
     saveGeminiSettings();
   });
+  geminiApiKeyInput.addEventListener("input", (e) => {
+    geminiApiKey = e.target.value.trim();
+  });
 }
 
 if (geminiModelInput) {
   geminiModelInput.addEventListener("change", (e) => {
-    geminiModel = e.target.value.trim();
+    geminiModel = normalizeGeminiModel(e.target.value.trim());
     saveGeminiSettings();
   });
 }
@@ -333,6 +610,17 @@ if (geminiModelInput) {
 if (btnTestGemini) {
   btnTestGemini.addEventListener("click", () => {
     syncGemini();
+  });
+}
+
+if (btnClearGeminiKey) {
+  btnClearGeminiKey.addEventListener("click", () => {
+    clearGeminiApiKey();
+    if (geminiInfoText) {
+      geminiInfoText.innerText = "API key cleared from this browser. Paste a new key and click Verify Key.";
+      geminiInfoText.className = "ollama-info";
+    }
+    updateOllamaStatus("offline", "Key cleared", "");
   });
 }
 
@@ -377,6 +665,10 @@ function updateOllamaStatus(status, text, infoClass = "") {
 }
 
 async function syncOllama() {
+  if (!isOllamaMode()) {
+    console.log("Skipping Ollama sync — engine mode is", engineMode);
+    return;
+  }
   const syncIcon = btnTestOllama ? btnTestOllama.querySelector("i") : null;
   if (syncIcon) syncIcon.classList.add("spin-loading");
   updateOllamaStatus("syncing", "Syncing...");
@@ -440,15 +732,29 @@ async function syncGemini() {
   updateOllamaStatus("syncing", "Verifying...");
 
   try {
+    // Always read the latest value from the input before verifying.
+    if (geminiApiKeyInput && geminiApiKeyInput.value.trim()) {
+      geminiApiKey = geminiApiKeyInput.value.trim();
+    }
     if (!geminiApiKey) {
       throw new Error("No API key entered.");
     }
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}`);
+    if (!looksLikeGeminiApiKey(geminiApiKey)) {
+      throw new Error(geminiAuthHint(geminiApiKey) || "Invalid Gemini API key format.");
+    }
+
+    const res = await fetch(buildGeminiUrl("models"), {
+      method: "GET",
+      headers: {
+        "x-goog-api-key": String(geminiApiKey || "").trim()
+      }
+    });
     if (syncIcon) syncIcon.classList.remove("spin-loading");
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      throw new Error((errBody.error && errBody.error.message) || `HTTP error ${res.status}`);
+      const apiMsg = (errBody.error && errBody.error.message) || `HTTP error ${res.status}`;
+      throw new Error(`${apiMsg} If this persists, create a fresh key at https://aistudio.google.com/apikey`);
     }
     const data = await res.json();
 
@@ -464,30 +770,12 @@ async function syncGemini() {
     }
 
     if (geminiModelInput) {
-      geminiModelInput.innerHTML = "";
-      let selectedIndex = 0;
-      let bestPreferenceFound = null;
-      // Remembering the model previously used with this same key takes priority over the generic heuristics below
-      const rememberedModel = (savedGeminiSettings && savedGeminiSettings.apiKey === geminiApiKey) ? savedGeminiSettings.model : null;
-
-      usableModels.forEach((m, idx) => {
-        const shortName = m.name.replace(/^models\//, "");
-        const option = document.createElement("option");
-        option.value = shortName;
-        option.innerText = m.displayName ? `${shortName} (${m.displayName})` : shortName;
-        geminiModelInput.appendChild(option);
-
-        const lowerName = shortName.toLowerCase();
-        if (rememberedModel && shortName === rememberedModel) {
-          selectedIndex = idx;
-          bestPreferenceFound = "remembered";
-        } else if (lowerName.includes("flash") && !lowerName.includes("lite") && bestPreferenceFound !== "remembered" && bestPreferenceFound !== "flash") {
-          selectedIndex = idx;
-          bestPreferenceFound = "flash";
-        }
-      });
-      geminiModelInput.selectedIndex = selectedIndex;
-      geminiModel = usableModels[selectedIndex].name.replace(/^models\//, "");
+      // Remembering the model previously used with this same key takes priority.
+      const rememberedModel = normalizeGeminiModel(
+        (savedGeminiSettings && savedGeminiSettings.apiKey === geminiApiKey) ? savedGeminiSettings.model : null
+      );
+      const availableIds = usableModels.map(m => m.name.replace(/^models\//, ""));
+      populateGeminiModelSelect(availableIds, rememberedModel || geminiModel || "gemini-3.1-flash-lite");
     }
 
     updateOllamaStatus("online", "Connected", "success");
@@ -591,26 +879,37 @@ function isTextGroundedInSource(candidateText, sourceText) {
   if (tokens.length === 0) return false;
 
   const matchedTokens = tokens.filter(t => source.includes(t));
-  const tokenThreshold = Math.max(1, Math.ceil(tokens.length * 0.45));
+  // Short paraphrases need stricter overlap; longer procedure text can be a bit looser.
+  const isShort = tokens.length <= 8;
+  const tokenThreshold = isShort
+    ? Math.max(3, Math.ceil(tokens.length * 0.7))
+    : Math.max(2, Math.ceil(tokens.length * 0.5));
   const tokenOk = matchedTokens.length >= tokenThreshold;
 
-  // Additional phrase check helps reject fluent hallucinations built from sparse index labels.
+  // Require contiguous phrase evidence so index-title word reuse alone is not enough.
   const words = String(candidateText || "")
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter(w => w.length >= 4);
+    .filter(w => w.length >= 3);
   let phraseOk = false;
-  if (words.length >= 4) {
-    for (let i = 0; i <= words.length - 2; i++) {
-      const bigram = `${words[i]} ${words[i + 1]}`.trim();
-      if (bigram.length >= 9 && source.includes(bigram)) {
+  if (words.length >= 3) {
+    for (let i = 0; i <= words.length - 3; i++) {
+      const trigram = `${words[i]} ${words[i + 1]} ${words[i + 2]}`.trim();
+      if (trigram.length >= 10 && source.includes(trigram)) {
         phraseOk = true;
         break;
       }
     }
-  } else {
-    phraseOk = tokenOk;
+  }
+  if (!phraseOk && words.length >= 2) {
+    for (let i = 0; i <= words.length - 2; i++) {
+      const bigram = `${words[i]} ${words[i + 1]}`.trim();
+      if (bigram.length >= 12 && source.includes(bigram)) {
+        phraseOk = true;
+        break;
+      }
+    }
   }
   return tokenOk && phraseOk;
 }
@@ -1011,6 +1310,9 @@ function isLikelyIndexOrTOCPage(pageText, pageNum = null) {
   const headingLikeLineCount = lines.filter(l => /^(?:\d+(?:\.\d+)*)\s+[A-Za-z]/.test(l) && !/[.!?]/.test(l)).length;
   const shortLineCount = lines.filter(l => l.split(/\s+/).length <= 14).length;
   const trailingPageNumLineCount = lines.filter(l => /\b\d{1,3}$/.test(l) && l.split(/\s+/).length <= 16).length;
+  // Two-column TOCs often leave bare page numbers as their own tokens/lines.
+  const barePageNumCount = (text.match(/(?:^|\s)\d{1,3}(?=\s|$)/g) || []).length;
+  const sentenceCount = (text.match(/[.!?]/g) || []).length;
   const frontMatter = typeof pageNum === "number" && pageNum <= 8;
 
   if (dotLeaderCount >= 3) return true;
@@ -1021,6 +1323,9 @@ function isLikelyIndexOrTOCPage(pageText, pageNum = null) {
   if (tocLineCount >= 6 && headingLikeLineCount >= 4) return true;
   // Front-matter continuation index: lots of short lines that terminate in page numbers.
   if (frontMatter && trailingPageNumLineCount >= 6 && shortLineCount >= 8) return true;
+  // Dense page-number listing with almost no prose sentences (typical TOC / index).
+  if (frontMatter && barePageNumCount >= 8 && sentenceCount <= 2 && shortLineCount >= 6) return true;
+  if (frontMatter && barePageNumCount >= 10 && sentenceCount <= 3) return true;
 
   return false;
 }
@@ -1083,9 +1388,9 @@ function buildTextFromPdfTextContent(textContent) {
 }
 
 
-function shouldProcessPageWithLLM(pageText) {
+function shouldProcessPageWithLLM(pageText, pageNum = null) {
   if (!pageText) return false;
-  if (isLikelyIndexOrTOCPage(pageText)) return false;
+  if (isLikelyIndexOrTOCPage(pageText, pageNum)) return false;
   
   // Reject explicit Table of Contents / Index pages to prevent LLM hallucination
   const lowerPageText = pageText.toLowerCase();
@@ -1105,6 +1410,9 @@ function shouldProcessPageWithLLM(pageText) {
 }
 
 async function runOllamaRawTranscription(base64Image) {
+  if (!isOllamaMode()) {
+    throw new Error("Ollama transcription blocked: current engine mode is " + engineMode);
+  }
   const systemPrompt = `You are a strict OCR engine.
 DO NOT describe the image. DO NOT say "The image shows" or "This is a picture of".
 Your ONLY task is to read the characters and text written in the image and output them.
@@ -1264,20 +1572,165 @@ ${text}
   return systemPrompt;
 }
 
+function extractFirstJsonObject(rawText) {
+  const input = String(rawText || "").trim();
+  if (!input) return "";
+
+  // Strip common markdown fences before scanning.
+  let text = input
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  const start = text.indexOf("{");
+  if (start === -1) return "";
+
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (ch === "\\") {
+        escaping = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+
+  // Truncated JSON: return best-effort slice from first brace.
+  return text.slice(start);
+}
+
+function repairTruncatedJson(rawJson) {
+  let s = String(rawJson || "").trim();
+  if (!s) return s;
+
+  // Normalize smart quotes that break JSON.parse
+  s = s.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+
+  // Drop incomplete trailing property / object fragments (common Gemini cutoff).
+  s = s.replace(/,\s*"[^"\n]*$/g, "");
+  s = s.replace(/,\s*\{[\s\S]*$/g, "");
+  s = s.replace(/:\s*"[^"\n]*$/g, ': "NA"');
+  s = s.replace(/:\s*-?\d+(\.\d+)?\s*$/g, ": 0");
+  s = s.replace(/,\s*$/g, "");
+
+  // Remove trailing commas before ] or }
+  s = s.replace(/,\s*([\]}])/g, "$1");
+
+  let inString = false;
+  let escaping = false;
+  const stack = [];
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaping) escaping = false;
+      else if (ch === "\\") escaping = true;
+      else if (ch === "\"") inString = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") stack.push("}");
+    else if (ch === "[") stack.push("]");
+    else if (ch === "}" || ch === "]") {
+      if (stack.length && stack[stack.length - 1] === ch) stack.pop();
+    }
+  }
+
+  if (inString) s += '"';
+  // If we closed a string mid-value after a colon with nothing, ensure value exists.
+  s = s.replace(/:\s*"$/g, ': "NA"');
+  s = s.replace(/,\s*$/g, "");
+  s = s.replace(/,\s*([\]}])/g, "$1");
+
+  while (stack.length) {
+    s += stack.pop();
+  }
+  return s;
+}
+
+function parseModelJsonResponse(rawResponseText) {
+  let cleanResponse = String(rawResponseText || "").trim();
+  const candidates = [];
+
+  const firstObject = extractFirstJsonObject(cleanResponse);
+  if (firstObject) candidates.push(firstObject);
+
+  // Fallback for older greedy behavior / odd wrappers.
+  const greedy = cleanResponse.match(/\{[\s\S]*\}/);
+  if (greedy && greedy[0] && !candidates.includes(greedy[0])) {
+    candidates.push(greedy[0]);
+  }
+  if (!candidates.includes(cleanResponse)) {
+    candidates.push(cleanResponse);
+  }
+
+  // Add repaired variants for truncated / malformed Gemini output.
+  const repaired = [];
+  candidates.forEach(c => {
+    const fixed = repairTruncatedJson(c);
+    if (fixed && !candidates.includes(fixed) && !repaired.includes(fixed)) {
+      repaired.push(fixed);
+    }
+  });
+  candidates.push(...repaired);
+
+  // Also try cutting back to earlier complete object ends.
+  if (firstObject && firstObject.length > 40) {
+    for (let i = firstObject.length - 2; i > 40; i--) {
+      if (firstObject[i] === "}") {
+        const slice = repairTruncatedJson(firstObject.slice(0, i + 1));
+        if (slice && !candidates.includes(slice)) candidates.push(slice);
+        // Don't generate too many candidates.
+        if (candidates.length > 12) break;
+      }
+    }
+  }
+
+  let lastErr = null;
+  for (const candidate of candidates) {
+    try {
+      return { json: JSON.parse(candidate), raw: candidate };
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error("Unable to parse model JSON response");
+}
+
 // Parses/normalizes the raw text response returned by any LLM backend into the app's
 // structured { maintenance, spare_parts, troubleshooting } shape. Shared by every engine so the
 // mapping, quality filters, and grounding guardrail only need to be maintained in one place.
-function processRawModelResponse(rawResponseText, docName, pageNum, base64Image, providerLabel) {
+function processRawModelResponse(rawResponseText, docName, pageNum, base64Image, providerLabel, sourceText = "") {
   const cleanDocName = docName ? docName.replace(/\.[^/.]+$/, "") : "NA";
   let cleanResponse = (rawResponseText || "").trim();
   try {
-    // Robust extraction of JSON object if wrapped in markdown formatting by smaller models
-    const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      cleanResponse = jsonMatch[0];
-    }
-    
-    const resultJson = JSON.parse(cleanResponse);
+    const parsed = parseModelJsonResponse(cleanResponse);
+    cleanResponse = parsed.raw;
+    const resultJson = parsed.json;
     const output = {
       maintenance: [],
       spare_parts: [],
@@ -1367,16 +1820,18 @@ function processRawModelResponse(rawResponseText, docName, pageNum, base64Image,
 
     // Guardrail: non-OCR pages must be text-grounded to reduce index/TOC hallucinations.
     if (!base64Image) {
-      const sourcePageText = String(text || "");
-      output.maintenance = output.maintenance.filter(r => isTextGroundedInSource(r.checks_instructions, sourcePageText));
-      output.spare_parts = output.spare_parts.filter(r => {
-        const probe = `${r.part_name} ${r.part_number_code} ${r.drawing_model_no}`;
-        return isTextGroundedInSource(probe, sourcePageText);
-      });
-      output.troubleshooting = output.troubleshooting.filter(r => {
-        const probe = `${r.problem} ${r.root_cause_solution}`;
-        return isTextGroundedInSource(probe, sourcePageText);
-      });
+      const sourcePageText = String(sourceText || "");
+      if (sourcePageText.trim()) {
+        output.maintenance = output.maintenance.filter(r => isTextGroundedInSource(r.checks_instructions, sourcePageText));
+        output.spare_parts = output.spare_parts.filter(r => {
+          const probe = `${r.part_name} ${r.part_number_code} ${r.drawing_model_no}`;
+          return isTextGroundedInSource(probe, sourcePageText);
+        });
+        output.troubleshooting = output.troubleshooting.filter(r => {
+          const probe = `${r.problem} ${r.root_cause_solution}`;
+          return isTextGroundedInSource(probe, sourcePageText);
+        });
+      }
     }
 
     return normalizeExtraction(output);
@@ -1388,6 +1843,9 @@ function processRawModelResponse(rawResponseText, docName, pageNum, base64Image,
 
 // Query local Ollama API to extract structured parts & maintenance instructions
 async function runOllamaExtractor(text, docName, pageNum, base64Image = null) {
+  if (!isOllamaMode()) {
+    throw new Error("Ollama extractor blocked: current engine mode is " + engineMode);
+  }
   const systemPrompt = buildExtractionPrompt(text, docName);
 
   const fetchBody = {
@@ -1430,15 +1888,18 @@ async function runOllamaExtractor(text, docName, pageNum, base64Image = null) {
   }
 
   const data = await response.json();
-  return processRawModelResponse(data.response, docName, pageNum, base64Image, "Ollama");
+  return processRawModelResponse(data.response, docName, pageNum, base64Image, "Ollama", text);
 }
 
 // Query the Google Gemini API (cloud) to extract structured parts & maintenance instructions.
 // Uses the same prompt/parsing pipeline as Ollama, so extraction quality/fields stay identical
 // regardless of which engine is active — only the transport (REST call + auth) differs.
 async function runGeminiExtractor(text, docName, pageNum, base64Image = null, mimeType = "image/jpeg") {
+  if (!isGeminiMode()) {
+    throw new Error("Gemini extractor blocked: current engine mode is " + engineMode);
+  }
   const systemPrompt = buildExtractionPrompt(text, docName);
-  const modelName = geminiModel || "gemini-flash-latest";
+  let modelName = normalizeGeminiModel(geminiModel);
 
   const parts = [{ text: systemPrompt }];
   if (base64Image) {
@@ -1449,38 +1910,35 @@ async function runGeminiExtractor(text, docName, pageNum, base64Image = null, mi
     contents: [{ role: "user", parts }],
     generationConfig: {
       temperature: 0.1,
-      responseMimeType: "application/json"
+      responseMimeType: "application/json",
+      maxOutputTokens: 8192
     }
   };
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 180000); // 180 seconds timeout
-
-  let response;
-  try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiApiKey}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(fetchBody),
-      signal: controller.signal
+  async function postToGemini(activeModel) {
+    return fetchGeminiGenerateContent(activeModel, fetchBody, {
+      timeoutMs: 180000,
+      requestLabel: `page-${pageNum}`
     });
-  } catch (fetchErr) {
-    if (fetchErr.name === 'AbortError') {
-      throw new Error("Gemini API took too long to respond (timeout). The page/image might be too complex.");
-    }
-    throw fetchErr;
-  } finally {
-    clearTimeout(timeoutId);
   }
 
+  let response = await postToGemini(modelName);
+
+  // No automatic model fallback on 404 — that doubled traffic across two Flash models
+  // in AI Studio usage. Fail loudly so the selected model can be fixed in settings.
   if (!response.ok) {
     let errDetail = "";
     try {
       const errJson = await response.json();
       errDetail = (errJson.error && errJson.error.message) || "";
     } catch (e) {}
+    if (response.status === 404) {
+      throw new Error(
+        `Gemini model "${modelName}" returned 404 Not Found` +
+        `${errDetail ? " - " + errDetail : ""}. ` +
+        `Pick a live model in Settings (Verify Key) — automatic fallback is disabled to avoid dual-model token waste.`
+      );
+    }
     throw new Error(`Gemini API error: ${response.status}${errDetail ? " - " + errDetail : ""}`);
   }
 
@@ -1492,7 +1950,7 @@ async function runGeminiExtractor(text, docName, pageNum, base64Image = null, mi
     throw new Error(`Gemini returned no content${blockReason ? " (blocked: " + blockReason + ")" : " (check API key/model name)"}.`);
   }
 
-  return processRawModelResponse(rawText, docName, pageNum, base64Image, "Gemini");
+  return processRawModelResponse(rawText, docName, pageNum, base64Image, "Gemini", text);
 }
 
 // Single entry point used by all extraction call sites — dispatches to whichever cloud/local
@@ -1503,7 +1961,10 @@ async function runLLMExtractor(text, docName, pageNum, base64Image = null, mimeT
   if (engineMode === "gemini") {
     return runGeminiExtractor(text, docName, pageNum, base64Image, mimeType);
   }
-  return runOllamaExtractor(text, docName, pageNum, base64Image);
+  if (engineMode === "ollama") {
+    return runOllamaExtractor(text, docName, pageNum, base64Image);
+  }
+  throw new Error("LLM extractor is disabled in Heuristics mode.");
 }
 
 // Simple markdown formatter helper for chat replies
@@ -1561,6 +2022,41 @@ function updateDashboardMetrics() {
   countConsumables.innerText = consumables;
   countTime.innerText = timeBased;
   countTroubleshooting.innerText = troubleshootingRegistry.length;
+}
+
+let renderGridDebounceTimer = null;
+const RENDER_GRID_DEBOUNCE_MS = 180;
+
+function getGridScrollEl() {
+  return document.querySelector(".grid-container");
+}
+
+function renderGridPreservingScroll() {
+  const scrollEl = getGridScrollEl();
+  const prevTop = scrollEl ? scrollEl.scrollTop : 0;
+  const prevLeft = scrollEl ? scrollEl.scrollLeft : 0;
+  renderGrid();
+  if (scrollEl) {
+    scrollEl.scrollTop = prevTop;
+    scrollEl.scrollLeft = prevLeft;
+  }
+}
+
+// Debounce rapid concurrent page completions so the UI doesn't thrash/freeze scroll.
+function scheduleRenderGrid(immediate = false) {
+  if (immediate) {
+    if (renderGridDebounceTimer) {
+      clearTimeout(renderGridDebounceTimer);
+      renderGridDebounceTimer = null;
+    }
+    renderGridPreservingScroll();
+    return;
+  }
+  if (renderGridDebounceTimer) clearTimeout(renderGridDebounceTimer);
+  renderGridDebounceTimer = setTimeout(() => {
+    renderGridDebounceTimer = null;
+    renderGridPreservingScroll();
+  }, RENDER_GRID_DEBOUNCE_MS);
 }
 
 function renderGrid() {
@@ -2250,7 +2746,7 @@ function extractTXTText(file) {
                 appendChatSystemMessage("Extraction aborted by user.");
                 break;
               }
-              if (!shouldProcessPageWithLLM(chunks[idx])) {
+              if (!shouldProcessPageWithLLM(chunks[idx], 1)) {
                 console.log(`Skipping chunk ${idx + 1} of ${chunks.length}: no relevant keywords.`);
                 continue;
               }
@@ -2280,7 +2776,7 @@ function extractTXTText(file) {
               renderGrid();
             }
           } else {
-            if (!shouldProcessPageWithLLM(text)) {
+            if (!shouldProcessPageWithLLM(text, 1)) {
               appendChatSystemMessage(`Skipped processing manual text with ${engineLabel}: no relevant keywords found.`);
             } else {
               llmChunksProcessed = 1;
@@ -2405,7 +2901,79 @@ function resolvePageRange(totalPages) {
   return { start, end, isPartial: (start !== 1 || end !== totalPages) };
 }
 
-// Scrape text content page-by-page using client PDF.js
+function getLLMConcurrency() {
+  // Tier 1: 8x caused ~50% success (mostly 404 fallback churn + 503 overload).
+  // Cap at 4; 503/429 retries stay per-request. Ollama stays sequential.
+  return engineMode === "gemini" ? 4 : 1;
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function runner() {
+    while (nextIndex < items.length) {
+      if (abortExtraction) return;
+      const current = nextIndex++;
+      results[current] = await worker(items[current], current);
+    }
+  }
+
+  const poolSize = Math.max(1, Math.min(concurrency, items.length || 1));
+  await Promise.all(Array.from({ length: poolSize }, () => runner()));
+  return results;
+}
+
+function pageOrderKey(row) {
+  const p = parseInt(row && row.page, 10);
+  return Number.isFinite(p) ? p : Number.MAX_SAFE_INTEGER;
+}
+
+// Keep grid/export order sequential by page even when concurrent calls finish out of order.
+function assembleRegistriesInPageOrder() {
+  const sortAndReindex = (registry) => {
+    const sorted = [...registry].sort((a, b) => {
+      const pa = pageOrderKey(a);
+      const pb = pageOrderKey(b);
+      if (pa !== pb) return pa - pb;
+      // Stable tie-break for rows from the same page.
+      return String(a.part_name || a.checks_instructions || a.problem || "")
+        .localeCompare(String(b.part_name || b.checks_instructions || b.problem || ""));
+    });
+    sorted.forEach((row, idx) => { row.id = idx + 1; });
+    return sorted;
+  };
+
+  maintenanceRegistry = sortAndReindex(maintenanceRegistry);
+  sparePartsRegistry = sortAndReindex(sparePartsRegistry);
+  troubleshootingRegistry = sortAndReindex(troubleshootingRegistry);
+}
+
+function mergeExtractionResult(result, counts) {
+  if (!result) return;
+  if (result.maintenance && result.maintenance.length > 0) {
+    counts.maint += result.maintenance.length;
+    const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
+    result.maintenance.forEach((r, rIdx) => { r.id = startingId + rIdx; });
+    maintenanceRegistry = [...maintenanceRegistry, ...result.maintenance];
+  }
+  if (result.spare_parts && result.spare_parts.length > 0) {
+    counts.spares += result.spare_parts.length;
+    const startingId = sparePartsRegistry.length > 0 ? Math.max(...sparePartsRegistry.map(r => r.id)) + 1 : 1;
+    result.spare_parts.forEach((r, rIdx) => { r.id = startingId + rIdx; });
+    sparePartsRegistry = [...sparePartsRegistry, ...result.spare_parts];
+  }
+  if (result.troubleshooting && result.troubleshooting.length > 0) {
+    counts.trouble += result.troubleshooting.length;
+    const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
+    result.troubleshooting.forEach((r, rIdx) => { r.id = startingId + rIdx; });
+    troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
+  }
+  assembleRegistriesInPageOrder();
+}
+
+// Page-by-page PDF read with single-page LLM parser, parallelized via concurrency pool.
+// Full page text is sent (no truncation). Grid refreshes after every page.
 function extractPDFText(file) {
   return new Promise((resolve, reject) => {
     const fileReader = new FileReader();
@@ -2420,57 +2988,66 @@ function extractPDFText(file) {
         const { start: rangeStart, end: rangeEnd, isPartial: isPartialRange } = resolvePageRange(totalPages);
         loadedPages = [];
         let compiledText = "";
-        let maintCount = 0;
-        let sparesCount = 0;
-        let troubleCount = 0;
+        const counts = { maint: 0, spares: 0, trouble: 0 };
         let llmPagesProcessed = 0;
         let prevPageWasIndex = false;
+        const llmJobs = [];
+        const useLLM = engineMode === "ollama" || engineMode === "gemini";
+        const engineLabel = engineMode === "gemini" ? "Gemini" : "Ollama";
+        const concurrency = useLLM ? getLLMConcurrency() : 1;
 
         if (isPartialRange) {
           appendChatSystemMessage(`Parsing only pages **${rangeStart}\u2013${rangeEnd}** of **${totalPages}** total pages, as requested.`);
         }
+        if (useLLM) {
+          appendChatSystemMessage(
+            engineMode === "gemini"
+              ? `Single-page parser with **${concurrency}x Gemini concurrency**, **per-request 429/503 backoff** (no model fallback on 404), **page-ordered assembly**, and **debounced grid refresh**.`
+              : `Single-page parser with **${engineLabel}** (one page at a time for local accuracy).`
+          );
+        }
 
+        // Read pages and queue single-page extraction jobs (full text, no truncation).
         for (let pageNum = rangeStart; pageNum <= rangeEnd; pageNum++) {
           if (abortExtraction) {
             appendChatSystemMessage("Extraction stopped by user request.");
             break;
           }
-          
+
           progressTitle.innerText = isPartialRange
             ? `Parsing Page ${pageNum} of ${totalPages} (Range ${rangeStart}-${rangeEnd})`
             : `Parsing Page ${pageNum} of ${totalPages}`;
-          const progressPercent = Math.round(((pageNum - rangeStart + 1) / (rangeEnd - rangeStart + 1)) * 100);
+          const progressPercent = Math.round(((pageNum - rangeStart + 1) / (rangeEnd - rangeStart + 1)) * 40);
           progressFill.style.width = `${progressPercent}%`;
-          
-          if (engineMode === "ollama" || engineMode === "gemini") {
-            progressStatus.innerText = `Scraping page ${pageNum} text content...`;
-          } else {
-            progressStatus.innerText = "Extracting layout string layers...";
-          }
-          
+          progressStatus.innerText = useLLM ? `Reading page ${pageNum}...` : "Extracting layout string layers...";
+
           const page = await pdf.getPage(pageNum);
-          let pageText = "";
+          const textContent = await page.getTextContent();
+          const nativePageText = buildTextFromPdfTextContent(textContent);
+          let pageText = nativePageText;
           let base64Image = null;
 
-          if ((engineMode === "ollama" || engineMode === "gemini") && parseStrategy === "ocr") {
+          // Always build native text first so TOC/index detection works even in OCR mode.
+          // Always render OCR images in OCR mode.
+          if (useLLM && parseStrategy === "ocr") {
             const viewport = page.getViewport({ scale: 1.0 });
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
             canvas.height = viewport.height;
             canvas.width = viewport.width;
-            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
-            base64Image = canvas.toDataURL('image/jpeg').split(',')[1];
-            pageText = "OCR VISION EXTRACTION - Use provided image to extract text.";
-          } else {
-            const textContent = await page.getTextContent();
-            pageText = buildTextFromPdfTextContent(textContent);
+            await page.render({ canvasContext: ctx, viewport }).promise;
+            base64Image = canvas.toDataURL("image/jpeg").split(",")[1];
+            pageText = nativePageText && nativePageText.trim().length > 0
+              ? nativePageText
+              : "OCR VISION EXTRACTION - Use provided image to extract text.";
           }
-          
-          loadedPages.push({ pageNum: pageNum, text: pageText });
+
+          loadedPages.push({ pageNum, text: pageText });
           compiledText += ` ${pageText}`;
 
-          const isIndexPage = isLikelyIndexOrTOCPage(pageText, pageNum);
-          const isLikelyContinuation = prevPageWasIndex && pageNum <= 8 && (pageText.match(/(?:\.{2,}\s*)?\d{1,3}\b/g) || []).length >= 5;
+          const isIndexPage = isLikelyIndexOrTOCPage(nativePageText || pageText, pageNum);
+          const indexProbe = nativePageText || pageText;
+          const isLikelyContinuation = prevPageWasIndex && pageNum <= 8 && (indexProbe.match(/(?:\.{2,}\s*)?\d{1,3}\b/g) || []).length >= 5;
           if (isIndexPage || isLikelyContinuation) {
             prevPageWasIndex = true;
             console.log(`Skipping Page ${pageNum}: detected as TOC/Index page.`);
@@ -2478,94 +3055,79 @@ function extractPDFText(file) {
           }
           prevPageWasIndex = false;
 
-          if (engineMode === "ollama" || engineMode === "gemini") {
-            const engineLabel = engineMode === "gemini" ? "Gemini" : "Ollama";
-            if (engineMode === "ollama" && parseStrategy === "ocr" && pageNum === 1) {
+          if (useLLM) {
+            if (engineMode === "ollama" && parseStrategy === "ocr" && pageNum === rangeStart) {
               const lowerModel = ollamaModel.toLowerCase();
               if (!lowerModel.includes("vision") && !lowerModel.includes("llava") && !lowerModel.includes("minicpm") && !lowerModel.includes("qwen")) {
                 appendChatSystemMessage(`⚠️ **Model Warning**: You are using OCR Vision mode with **${ollamaModel}**, which appears to be a text-only model! Vision extraction will fail and return 0 results. Please select a vision model (e.g., \`llama3.2-vision\` or \`llava\`).`);
               }
             }
-
-            if (parseStrategy !== "ocr" && !shouldProcessPageWithLLM(pageText)) {
+            if (parseStrategy !== "ocr" && !shouldProcessPageWithLLM(pageText, pageNum)) {
               console.log(`Skipping Page ${pageNum} in ${engineLabel} mode: no high-value maintenance/parts keywords found.`);
               continue;
             }
-            llmPagesProcessed++;
-            progressStatus.innerText = `${engineLabel}: Extracting from Page ${pageNum}...`;
-            try {
-              const result = await runLLMExtractor(pageText, file.name, pageNum, base64Image);
-              if (result.maintenance && result.maintenance.length > 0) {
-                maintCount += result.maintenance.length;
-                const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
-                result.maintenance.forEach((r, rIdx) => r.id = startingId + rIdx);
-                maintenanceRegistry = [...maintenanceRegistry, ...result.maintenance];
-              }
-              if (result.spare_parts && result.spare_parts.length > 0) {
-                sparesCount += result.spare_parts.length;
-                const startingId = sparePartsRegistry.length > 0 ? Math.max(...sparePartsRegistry.map(r => r.id)) + 1 : 1;
-                result.spare_parts.forEach((r, rIdx) => r.id = startingId + rIdx);
-                sparePartsRegistry = [...sparePartsRegistry, ...result.spare_parts];
-              }
-              if (result.troubleshooting && result.troubleshooting.length > 0) {
-                troubleCount += result.troubleshooting.length;
-                const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
-                result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
-                troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
-              }
-              renderGrid();
-            } catch (err) {
-              console.warn(`${engineLabel} failed on Page ${pageNum}:`, err);
-              if (base64Image) {
-                // Heuristics cannot process images, so there is no safe fallback for OCR pages.
-                appendChatSystemMessage(`⚠️ **Page ${pageNum} Warning**: Failed to parse with ${engineLabel}. Skipping page...`);
-              } else {
-                appendChatSystemMessage(`⚠️ **Page ${pageNum} Warning**: Failed to parse with ${engineLabel} (${err.message}). Falling back to heuristics for this page...`);
-                const fallbackResult = runRuleExtractorHeuristics(pageText, file.name, pageNum);
-                if (fallbackResult.maintenance && fallbackResult.maintenance.length > 0) {
-                  maintCount += fallbackResult.maintenance.length;
-                  const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
-                  fallbackResult.maintenance.forEach((r, rIdx) => r.id = startingId + rIdx);
-                  maintenanceRegistry = [...maintenanceRegistry, ...fallbackResult.maintenance];
-                }
-                if (fallbackResult.spare_parts && fallbackResult.spare_parts.length > 0) {
-                  sparesCount += fallbackResult.spare_parts.length;
-                  const startingId = sparePartsRegistry.length > 0 ? Math.max(...sparePartsRegistry.map(r => r.id)) + 1 : 1;
-                  fallbackResult.spare_parts.forEach((r, rIdx) => r.id = startingId + rIdx);
-                  sparePartsRegistry = [...sparePartsRegistry, ...fallbackResult.spare_parts];
-                }
-                if (fallbackResult.troubleshooting && fallbackResult.troubleshooting.length > 0) {
-                  troubleCount += fallbackResult.troubleshooting.length;
-                  const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
-                  fallbackResult.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
-                  troubleshootingRegistry = [...troubleshootingRegistry, ...fallbackResult.troubleshooting];
-                }
-                renderGrid();
-              }
-            }
+            llmJobs.push({
+              pageNum,
+              pageText, // full page text — no truncation
+              base64Image
+            });
           } else {
-            // Heuristics Page level extractor
             const result = runRuleExtractorHeuristics(pageText, file.name, pageNum);
-            if (result.maintenance && result.maintenance.length > 0) {
-              maintCount += result.maintenance.length;
-              const startingId = maintenanceRegistry.length > 0 ? Math.max(...maintenanceRegistry.map(r => r.id)) + 1 : 1;
-              result.maintenance.forEach((r, rIdx) => r.id = startingId + rIdx);
-              maintenanceRegistry = [...maintenanceRegistry, ...result.maintenance];
-            }
-            if (result.spare_parts && result.spare_parts.length > 0) {
-              sparesCount += result.spare_parts.length;
-              const startingId = sparePartsRegistry.length > 0 ? Math.max(...sparePartsRegistry.map(r => r.id)) + 1 : 1;
-              result.spare_parts.forEach((r, rIdx) => r.id = startingId + rIdx);
-              sparePartsRegistry = [...sparePartsRegistry, ...result.spare_parts];
-            }
-            if (result.troubleshooting && result.troubleshooting.length > 0) {
-              troubleCount += result.troubleshooting.length;
-              const startingId = troubleshootingRegistry.length > 0 ? Math.max(...troubleshootingRegistry.map(r => r.id)) + 1 : 1;
-              result.troubleshooting.forEach((r, rIdx) => r.id = startingId + rIdx);
-              troubleshootingRegistry = [...troubleshootingRegistry, ...result.troubleshooting];
-            }
-            renderGrid();
+            mergeExtractionResult(result, counts);
+            scheduleRenderGrid();
           }
+        }
+
+        // Parallel single-page extraction (one page per request; concurrency-limited).
+        if (useLLM && llmJobs.length > 0 && !abortExtraction) {
+          let completed = 0;
+          llmPagesProcessed = llmJobs.length;
+          progressStatus.innerText = `${engineLabel}: extracting ${llmJobs.length} pages (${concurrency}x concurrent, single-page parser)...`;
+
+          let mergeChain = Promise.resolve();
+          const mergeSafe = (result) => {
+            mergeChain = mergeChain.then(() => {
+              // mergeExtractionResult also re-sorts registries by page number.
+              mergeExtractionResult(result, counts);
+            });
+            return mergeChain;
+          };
+
+          await mapWithConcurrency(llmJobs, concurrency, async (job) => {
+            if (abortExtraction) return null;
+            try {
+              const result = await runLLMExtractor(job.pageText, file.name, job.pageNum, job.base64Image);
+              await mergeSafe(result);
+            } catch (err) {
+              console.warn(`${engineLabel} failed on Page ${job.pageNum}:`, err);
+              if (job.base64Image) {
+                appendChatSystemMessage(`⚠️ **Page ${job.pageNum} Warning**: Failed to parse with ${engineLabel}. Skipping page...`);
+              } else {
+                appendChatSystemMessage(`⚠️ **Page ${job.pageNum} Warning**: Failed to parse with ${engineLabel} (${err.message}). Falling back to heuristics for this page...`);
+                const fallbackResult = runRuleExtractorHeuristics(job.pageText, file.name, job.pageNum);
+                await mergeSafe(fallbackResult);
+              }
+            } finally {
+              completed += 1;
+              const extractPercent = 40 + Math.round((completed / llmJobs.length) * 60);
+              progressFill.style.width = `${extractPercent}%`;
+              progressTitle.innerText = `${engineLabel}: ${completed}/${llmJobs.length} pages`;
+              progressStatus.innerText = `Single-page extract (${concurrency} concurrent)...`;
+              // Debounced refresh — avoids thrashing when many pages finish together.
+              scheduleRenderGrid(completed === llmJobs.length);
+            }
+            return null;
+          });
+          await mergeChain;
+          assembleRegistriesInPageOrder();
+          scheduleRenderGrid(true);
+        } else if (!useLLM) {
+          assembleRegistriesInPageOrder();
+          scheduleRenderGrid(true);
+        }
+
+        if (abortExtraction) {
+          appendChatSystemMessage("Extraction stopped by user request.");
         }
 
         progressFill.style.width = "100%";
@@ -2580,19 +3142,22 @@ function extractPDFText(file) {
           safeCreateIcons();
           
           const pagesInRange = rangeEnd - rangeStart + 1;
-          const labelModeText = engineMode === "ollama" ? `local LLM (${ollamaModel}) processing ${llmPagesProcessed} / ${pagesInRange} pages` : engineMode === "gemini" ? `Gemini API (${geminiModel}) processing ${llmPagesProcessed} / ${pagesInRange} pages` : "heuristics";
+          const labelModeText = engineMode === "ollama"
+            ? `local LLM (${ollamaModel}) processing ${llmPagesProcessed} / ${pagesInRange} pages (single-page)`
+            : engineMode === "gemini"
+              ? `Gemini API (${geminiModel}) processing ${llmPagesProcessed} / ${pagesInRange} pages (${concurrency}x concurrent, 429/503-retry, no 404 fallback)`
+              : "heuristics";
           const rangeLabel = isPartialRange ? `pages ${rangeStart}-${rangeEnd} of ${totalPages}` : `${totalPages} pages`;
-          appendChatSystemMessage(`Completed client-side PDF processing for **"${file.name}"** (${rangeLabel}) using **${labelModeText}**. Extracted **${maintCount}** tasks, **${sparesCount}** spare parts, and **${troubleCount}** troubleshooting issues into the registries.`);
+          appendChatSystemMessage(`Completed client-side PDF processing for **"${file.name}"** (${rangeLabel}) using **${labelModeText}**. Extracted **${counts.maint}** tasks, **${counts.spares}** spare parts, and **${counts.trouble}** troubleshooting issues into the registries.`);
           
-          // Warn if it seems to be a scanned document
-          if (maintCount === 0 && sparesCount === 0 && troubleCount === 0 && compiledText.trim().length < 200) {
+          if (counts.maint === 0 && counts.spares === 0 && counts.trouble === 0 && compiledText.trim().length < 200) {
             appendChatSystemMessage(`⚠️ **Document Scan Warning**: No searchable text layers were detected in **"${file.name}"**. The PDF may be composed of scanned page images. Please ensure the manual has selectable text or try converting it to a plain text (.txt) file.`);
           }
           
           renderGrid();
           isExtracting = false;
           resolve();
-        }, 1200);
+        }, 400);
 
       } catch (err) {
         isExtracting = false;
@@ -3073,21 +3638,29 @@ function appendUserMessage(text) {
 // structured JSON extraction produced by runOllamaExtractor/runGeminiExtractor.
 async function callLLMRagAnswer(ragPrompt) {
   if (engineMode === "gemini") {
-    const modelName = geminiModel || "gemini-flash-latest";
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiApiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    let modelName = normalizeGeminiModel(geminiModel);
+    async function postRag(activeModel) {
+      return fetchGeminiGenerateContent(activeModel, {
         contents: [{ role: "user", parts: [{ text: ragPrompt }] }],
         generationConfig: { temperature: 0.2 }
-      })
-    });
+      }, { timeoutMs: 120000, maxAttempts: 4 });
+    }
+
+    let response = await postRag(modelName);
+
     if (!response.ok) {
       let errDetail = "";
       try {
         const errJson = await response.json();
         errDetail = (errJson.error && errJson.error.message) || "";
       } catch (e) {}
+      if (response.status === 404) {
+        throw new Error(
+          `Gemini model "${modelName}" returned 404 Not Found` +
+          `${errDetail ? " - " + errDetail : ""}. ` +
+          `Pick a live model in Settings (Verify Key) — automatic fallback is disabled.`
+        );
+      }
       throw new Error(`Gemini API returned HTTP ${response.status}${errDetail ? " - " + errDetail : ""}`);
     }
     const data = await response.json();
@@ -3097,6 +3670,10 @@ async function callLLMRagAnswer(ragPrompt) {
       throw new Error("Gemini returned no content (check API key/model name).");
     }
     return text.trim();
+  }
+
+  if (engineMode !== "ollama") {
+    throw new Error("LLM chat is disabled unless Ollama or Gemini mode is selected.");
   }
 
   const response = await fetch(`${ollamaUrl}/api/generate`, {
@@ -3388,7 +3965,8 @@ function initApp() {
   
   // Initialize settings panel visibility and state on page load
   if (engineModeSelect) {
-    engineMode = engineModeSelect.value || "ollama";
+    // Restore persisted mode (defaults to Gemini) so refresh doesn't silently switch back to Ollama.
+    engineModeSelect.value = engineMode;
     if (engineMode === "ollama") {
       ollamaSettingsGroup.style.display = "block";
       if (geminiSettingsGroup) geminiSettingsGroup.style.display = "none";
