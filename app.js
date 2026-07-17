@@ -163,30 +163,25 @@ function saveOllamaSettings() {
 // this browser's localStorage (not committed to git). Anyone with the page can still see the key
 // in DevTools/network — for public deploys, proxy through a backend instead.
 let geminiApiKey = "";
-let geminiModel = "gemini-3.1-flash-lite"; // Fastest Gemini tier for high-volume extraction
+let geminiModel = "gemini-3.5-flash"; // Best active Flash for dense/scanned manuals
 
 const GEMINI_SETTINGS_KEY = "omniparse_gemini_settings";
-const GEMINI_FALLBACK_MODEL = "gemini-flash-latest";
+const GEMINI_FALLBACK_MODEL = "gemini-3.5-flash";
+// Keep the dropdown short: one cheap active model + one best Flash model.
+// (Gemini 1.5 is shut down — Flash-Lite is the current cheap replacement.)
 const GEMINI_RECOMMENDED_MODELS = [
   {
     id: "gemini-3.1-flash-lite",
-    label: "gemini-3.1-flash-lite — Flash-Lite: best for high-volume, simpler extraction"
-  },
-  {
-    id: "gemini-flash-latest",
-    label: "gemini-flash-latest — Flash: better for dense manuals"
+    label: "gemini-3.1-flash-lite — cheaper / faster"
   },
   {
     id: "gemini-3.5-flash",
-    label: "gemini-3.5-flash — Flash: better for dense manuals"
-  },
-  {
-    id: "gemini-3.1-pro-preview",
-    label: "gemini-3.1-pro-preview — Pro: best for dense manuals"
+    label: "gemini-3.5-flash — best for dense & scanned manuals"
   }
 ];
 const RETIRED_GEMINI_MODEL_PATTERNS = [
   /^gemini-1\./i,
+  /^gemini-2\.0-/i,
   /^gemini-2\.5-flash$/i,
   /^gemini-2\.5-pro$/i,
   /^gemini-pro$/i,
@@ -227,38 +222,23 @@ function populateGeminiModelSelect(availableModelIds, preferredModelId) {
 
   const available = new Set(
     (availableModelIds || [])
-      .map(id => normalizeGeminiModel(id))
+      .map(id => String(id || "").trim().replace(/^models\//, ""))
       .filter(Boolean)
   );
   const hasAvailabilityFilter = available.size > 0;
 
   geminiModelInput.innerHTML = "";
 
-  // Keep curated guidance labels at the top.
-  const recommendedIds = new Set();
+  // Only show the short curated list (never dump every API model).
   GEMINI_RECOMMENDED_MODELS.forEach(model => {
     if (hasAvailabilityFilter && !available.has(model.id)) return;
-    recommendedIds.add(model.id);
     const option = document.createElement("option");
     option.value = model.id;
     option.innerText = model.label;
     geminiModelInput.appendChild(option);
   });
 
-  // Append any other live models returned by the API.
-  if (hasAvailabilityFilter) {
-    Array.from(available)
-      .filter(id => !recommendedIds.has(id) && !isRetiredGeminiModel(id))
-      .sort((a, b) => a.localeCompare(b))
-      .forEach(id => {
-        const option = document.createElement("option");
-        option.value = id;
-        option.innerText = geminiModelLabel(id);
-        geminiModelInput.appendChild(option);
-      });
-  }
-
-  // If the API filter excluded everything (or list was empty), restore curated defaults.
+  // If Verify Key's live list omitted our curated IDs, still show the short list.
   if (geminiModelInput.options.length === 0) {
     GEMINI_RECOMMENDED_MODELS.forEach(model => {
       const option = document.createElement("option");
@@ -272,8 +252,8 @@ function populateGeminiModelSelect(availableModelIds, preferredModelId) {
   const optionIds = Array.from(geminiModelInput.options).map(o => o.value);
   let selected = optionIds.includes(preferred) ? preferred : null;
   if (!selected) {
-    selected = optionIds.find(id => id === "gemini-3.1-flash-lite")
-      || optionIds.find(id => id === GEMINI_FALLBACK_MODEL)
+    selected = optionIds.find(id => id === "gemini-3.5-flash")
+      || optionIds.find(id => id === "gemini-3.1-flash-lite")
       || optionIds[0];
   }
   geminiModelInput.value = selected;
@@ -775,7 +755,7 @@ async function syncGemini() {
         (savedGeminiSettings && savedGeminiSettings.apiKey === geminiApiKey) ? savedGeminiSettings.model : null
       );
       const availableIds = usableModels.map(m => m.name.replace(/^models\//, ""));
-      populateGeminiModelSelect(availableIds, rememberedModel || geminiModel || "gemini-3.1-flash-lite");
+      populateGeminiModelSelect(availableIds, rememberedModel || geminiModel || "gemini-3.5-flash");
     }
 
     updateOllamaStatus("online", "Connected", "success");
@@ -1444,6 +1424,7 @@ Output ONLY the transcribed text. Absolutely NO conversational text or descripti
 // fixes to them) automatically apply to every engine instead of drifting out of sync.
 function buildExtractionPrompt(text, docName) {
   const cleanDocName = docName ? docName.replace(/\.[^/.]+$/, "") : "NA";
+  const isOcrVision = /OCR VISION EXTRACTION/i.test(String(text || ""));
   let systemPrompt = `You are an expert technical parser of industrial engineering manuals.
 Your task is to analyze the text page content below and extract:
 1. Maintenance routines, checks, and instructions.
@@ -1452,7 +1433,15 @@ Your task is to analyze the text page content below and extract:
 
 Group your extractions into three distinct JSON lists: "maintenance", "spare_parts", and "troubleshooting".
 CRITICAL INSTRUCTION: If a field is missing, not specified, or not available in the text, you MUST populate it with the string "NA". Do not use null, undefined, or empty values.
-
+${isOcrVision ? `
+OCR / SCANNED PAGE RULES (CRITICAL):
+- Read EVERY filled row in spare-parts tables. Do not stop after a few sample rows.
+- Include dense electrical/mechanical rows (fuses, breakers, relays, fans, kits, etc.).
+- Map: Description → part_name, NOV/Part No → part_number_code, Item/Ref No → drawing_model_no, Item No → item_no.
+- Cubicle/section headers (e.g. INCOMER CUBICLE) go into subsystem_location for following rows.
+- Commissioning / Two-year recommended quantities can go into quantity / recommended_stock_qty when present.
+- Prefer completeness over brevity. Output as many spare_parts objects as there are real table rows on this page.
+` : ""}
 Rules for "maintenance" tasks:
 - Extract real maintenance tasks, checks, inspection routines, adjustments, or replacements.
 - Clean instructions to remove page headers or random numbers. Pay special attention to tables and bulleted checklists, ensuring each item is extracted accurately.
@@ -1911,7 +1900,8 @@ async function runGeminiExtractor(text, docName, pageNum, base64Image = null, mi
     generationConfig: {
       temperature: 0.1,
       responseMimeType: "application/json",
-      maxOutputTokens: 8192
+      // Dense OCR spare tables need more output headroom than text pages.
+      maxOutputTokens: base64Image ? 16384 : 8192
     }
   };
 
@@ -3027,16 +3017,25 @@ function extractPDFText(file) {
           let pageText = nativePageText;
           let base64Image = null;
 
+          // Scanned manuals often have no text layer. Auto-OCR when native text is empty/weak
+          // so Native mode does not silently skip real spare-parts pages.
+          const nativeLen = (nativePageText || "").trim().length;
+          const forceOcrForScan = useLLM && nativeLen < 40;
+          const useOcr = useLLM && (parseStrategy === "ocr" || forceOcrForScan);
+          if (forceOcrForScan && parseStrategy !== "ocr" && pageNum === rangeStart) {
+            appendChatSystemMessage(`⚠️ **Scanned PDF detected**: little/no selectable text. Auto-enabling **OCR Vision** for this document so spare-parts tables can be read from page images.`);
+          }
+
           // Always build native text first so TOC/index detection works even in OCR mode.
-          // Always render OCR images in OCR mode.
-          if (useLLM && parseStrategy === "ocr") {
-            const viewport = page.getViewport({ scale: 1.0 });
+          // Render OCR images at 2x scale for dense NOV-style spare lists.
+          if (useOcr) {
+            const viewport = page.getViewport({ scale: 2.0 });
             const canvas = document.createElement("canvas");
             const ctx = canvas.getContext("2d");
             canvas.height = viewport.height;
             canvas.width = viewport.width;
             await page.render({ canvasContext: ctx, viewport }).promise;
-            base64Image = canvas.toDataURL("image/jpeg").split(",")[1];
+            base64Image = canvas.toDataURL("image/jpeg", 0.92).split(",")[1];
             pageText = nativePageText && nativePageText.trim().length > 0
               ? nativePageText
               : "OCR VISION EXTRACTION - Use provided image to extract text.";
@@ -3045,8 +3044,10 @@ function extractPDFText(file) {
           loadedPages.push({ pageNum, text: pageText });
           compiledText += ` ${pageText}`;
 
-          const isIndexPage = isLikelyIndexOrTOCPage(nativePageText || pageText, pageNum);
-          const indexProbe = nativePageText || pageText;
+          // Never treat OCR-placeholder pages as TOC/index (no real text to classify).
+          const tocProbe = nativePageText && nativePageText.trim().length > 40 ? nativePageText : "";
+          const isIndexPage = tocProbe ? isLikelyIndexOrTOCPage(tocProbe, pageNum) : false;
+          const indexProbe = tocProbe || "";
           const isLikelyContinuation = prevPageWasIndex && pageNum <= 8 && (indexProbe.match(/(?:\.{2,}\s*)?\d{1,3}\b/g) || []).length >= 5;
           if (isIndexPage || isLikelyContinuation) {
             prevPageWasIndex = true;
@@ -3056,13 +3057,13 @@ function extractPDFText(file) {
           prevPageWasIndex = false;
 
           if (useLLM) {
-            if (engineMode === "ollama" && parseStrategy === "ocr" && pageNum === rangeStart) {
+            if (engineMode === "ollama" && useOcr && pageNum === rangeStart) {
               const lowerModel = ollamaModel.toLowerCase();
               if (!lowerModel.includes("vision") && !lowerModel.includes("llava") && !lowerModel.includes("minicpm") && !lowerModel.includes("qwen")) {
                 appendChatSystemMessage(`⚠️ **Model Warning**: You are using OCR Vision mode with **${ollamaModel}**, which appears to be a text-only model! Vision extraction will fail and return 0 results. Please select a vision model (e.g., \`llama3.2-vision\` or \`llava\`).`);
               }
             }
-            if (parseStrategy !== "ocr" && !shouldProcessPageWithLLM(pageText, pageNum)) {
+            if (!useOcr && !shouldProcessPageWithLLM(pageText, pageNum)) {
               console.log(`Skipping Page ${pageNum} in ${engineLabel} mode: no high-value maintenance/parts keywords found.`);
               continue;
             }
